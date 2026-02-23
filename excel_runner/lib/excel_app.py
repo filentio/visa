@@ -144,7 +144,12 @@ def open_excel_workbook(
         except Exception:
             pass
 
-        wb = excel.Workbooks.Open(str(workbook_path), UpdateLinks=0, ReadOnly=False)
+        try:
+            wb = excel.Workbooks.Open(str(workbook_path), UpdateLinks=0, ReadOnly=False)
+        except Exception:
+            # Best-effort: some environments require CorruptLoad to bypass recovery prompt.
+            # Not all Excel versions support this named argument.
+            wb = excel.Workbooks.Open(str(workbook_path), UpdateLinks=0, ReadOnly=False, CorruptLoad=1)
         return ExcelSession(excel=excel, workbook=wb, pid=pid)
     except Exception as e:
         # If creation/open fails, still attempt to quit and uninit COM.

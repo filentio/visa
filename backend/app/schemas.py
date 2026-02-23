@@ -93,3 +93,20 @@ class InternalCompleteIn(BaseModel):
 class InternalFailIn(BaseModel):
     error_message: str
 
+
+class CompanyCreateIn(BaseModel):
+    name: str
+    seal_key: str
+    logo_key: str
+    director_sign_key: str
+    client_sign_key: str
+
+
+class CompanyOut(BaseModel):
+    company_id: str
+    name: str
+    seal_key: str
+    logo_key: str
+    director_sign_key: str
+    client_sign_key: str
+

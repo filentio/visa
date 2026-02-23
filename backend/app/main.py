@@ -147,6 +147,48 @@ def generate_package(body: schemas.GeneratePackageIn, db: Session = Depends(get_
     return schemas.GeneratePackageOut(job_id=job.id, package_id=package.id)
 
 
+@app.get("/companies", response_model=list[schemas.CompanyOut])
+def list_companies(db: Session = Depends(get_db)) -> list[schemas.CompanyOut]:
+    companies = db.execute(select(models.Company).order_by(models.Company.created_at.asc())).scalars().all()
+    return [
+        schemas.CompanyOut(
+            company_id=c.id,
+            name=c.name,
+            seal_key=c.seal_key,
+            logo_key=c.logo_key,
+            director_sign_key=c.director_sign_key,
+            client_sign_key=c.client_sign_key,
+        )
+        for c in companies
+    ]
+
+
+@app.post("/internal/companies", dependencies=[Depends(require_internal_key)], response_model=schemas.CompanyOut)
+def internal_create_company(body: schemas.CompanyCreateIn, db: Session = Depends(get_db)) -> schemas.CompanyOut:
+    company = models.Company(
+        id=new_id(),
+        name=body.name,
+        seal_key=body.seal_key,
+        logo_key=body.logo_key,
+        director_sign_key=body.director_sign_key,
+        client_sign_key=body.client_sign_key,
+    )
+    db.add(company)
+    try:
+        db.commit()
+    except IntegrityError as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Company create failed: {e}") from e
+    return schemas.CompanyOut(
+        company_id=company.id,
+        name=company.name,
+        seal_key=company.seal_key,
+        logo_key=company.logo_key,
+        director_sign_key=company.director_sign_key,
+        client_sign_key=company.client_sign_key,
+    )
+
+
 @app.get("/jobs/{job_id}", response_model=schemas.JobStatusOut)
 def get_job(job_id: str, db: Session = Depends(get_db)) -> schemas.JobStatusOut:
     job = db.execute(select(models.Job).where(models.Job.id == job_id)).scalar_one_or_none()
