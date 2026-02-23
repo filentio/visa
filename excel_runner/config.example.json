@@ -1,0 +1,41 @@
+{
+  "template_path": "C:\\\\path\\\\to\\\\шаблон 12.09.xlsm",
+  "work_dir": "C:\\\\temp\\\\visa_jobs\\\\job_123",
+  "client": {
+    "full_name": "Ivanov Ivan",
+    "passport_no": "77 6787555",
+    "dob": "1998-10-07",
+    "address": "RUSSIA, Moscow, 119087, Akademik Tupolev str.14 apt.430",
+    "country_display": "RUSSIA, Moscow"
+  },
+  "job": {
+    "currency_symbol": "$",
+    "fx_rate": 79.75,
+    "salary_rub": 840000,
+    "position": "Senior business analyst",
+    "contract_start_date": "2025-06-30",
+    "contract_number": "307521/2025"
+  },
+  "company": {
+    "selected_company_name": "STARLINK LLC",
+    "assets": {
+      "logo_png": "C:\\\\temp\\\\assets\\\\logo.png",
+      "seal_png": "C:\\\\temp\\\\assets\\\\seal.png",
+      "director_sign_png": "C:\\\\temp\\\\assets\\\\director_sign.png",
+      "client_sign_png": "C:\\\\temp\\\\assets\\\\client_sign.png"
+    }
+  },
+  "export": {
+    "contract_template": "договор",
+    "bank_template": "т-банк 2 (6 мес) $",
+    "insurance_template": "страховка",
+    "salary_template": "Salary упрошенная",
+    "output_files": {
+      "contract": "Contract.pdf",
+      "bank": "Bank_Statement_6m.pdf",
+      "insurance": "Insurance.pdf",
+      "salary": "Salary_Certificate.pdf"
+    }
+  }
+}
+
