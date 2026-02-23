@@ -1,0 +1,45 @@
+olevba_report (brief)
+
+Source: шаблон 12.09.xlsm
+Generated at (UTC): 2026-02-23T19:21:17+00:00
+
+Status: OK
+
+Extracted files: 30
+- classes: ЭтаКнига.cls -> classes/ЭтаКнига.cls
+- classes: Лист1.cls -> classes/Лист1.cls
+- classes: Лист2.cls -> classes/Лист2.cls
+- classes: Лист3.cls -> classes/Лист3.cls
+- classes: Лист4.cls -> classes/Лист4.cls
+- classes: Лист5.cls -> classes/Лист5.cls
+- classes: Лист6.cls -> classes/Лист6.cls
+- classes: Лист7.cls -> classes/Лист7.cls
+- classes: Лист8.cls -> classes/Лист8.cls
+- classes: Лист9.cls -> classes/Лист9.cls
+- classes: Лист10.cls -> classes/Лист10.cls
+- classes: Лист11.cls -> classes/Лист11.cls
+- classes: Лист12.cls -> classes/Лист12.cls
+- classes: Лист13.cls -> classes/Лист13.cls
+- modules: Module1.bas -> modules/Module1.bas
+- classes: Лист14.cls -> classes/Лист14.cls
+- classes: Лист15.cls -> classes/Лист15.cls
+- classes: Лист16.cls -> classes/Лист16.cls
+- classes: Лист17.cls -> classes/Лист17.cls
+- classes: Лист18.cls -> classes/Лист18.cls
+- classes: Лист19.cls -> classes/Лист19.cls
+- classes: Лист20.cls -> classes/Лист20.cls
+- classes: Лист21.cls -> classes/Лист21.cls
+- classes: Лист22.cls -> classes/Лист22.cls
+- classes: Лист23.cls -> classes/Лист23.cls
+- modules: Module2.bas -> modules/Module2.bas
+- classes: Лист24.cls -> classes/Лист24.cls
+- classes: Лист25.cls -> classes/Лист25.cls
+- classes: Лист26.cls -> classes/Лист26.cls
+- classes: Лист27.cls -> classes/Лист27.cls
+
+Macro analysis rows: 5
+- AutoExec | Worksheet_Calculate | May run when an Excel WorkSheet is opened
+- AutoExec | Worksheet_Change | Runs when the file is opened and ActiveX objects trigger events
+- Suspicious | Call | May call a DLL using Excel 4 Macros (XLM/XLF)
+- Suspicious | Hex Strings | Hex-encoded strings were detected, may be used to obfuscate strings (option --decode to see all)
+- Suspicious | Base64 Strings | Base64-encoded strings were detected, may be used to obfuscate strings (option --decode to see all)
