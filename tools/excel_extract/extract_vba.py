@@ -8,7 +8,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class ExtractError(RuntimeError):
@@ -408,6 +408,14 @@ def write_olevba_report(
 
 
 def prepare_output_dir(out_dir: Path) -> None:
+    resolved = out_dir.resolve()
+    cwd = Path.cwd().resolve()
+    if resolved in (Path("/"), cwd, cwd.parent):
+        raise ExtractError(
+            f"Unsafe --out path: {out_dir!s}. Refusing to delete/create this directory. "
+            "Use a dedicated folder, e.g. --out extracted_vba"
+        )
+
     if out_dir.exists():
         shutil.rmtree(out_dir)
     (out_dir / "modules").mkdir(parents=True, exist_ok=True)
