@@ -1,0 +1,3 @@
+oletools
+openpyxl
+lxml
