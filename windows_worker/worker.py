@@ -41,6 +41,14 @@ def log(msg: str) -> None:
     sys.stdout.flush()
 
 
+class StageError(RuntimeError):
+    def __init__(self, stage: str, detail: str = "") -> None:
+        self.stage = stage
+        self.detail = detail
+        msg = stage if not detail else f"{stage}: {detail}"
+        super().__init__(msg)
+
+
 @dataclass(frozen=True)
 class Config:
     backend_base_url: str
@@ -109,15 +117,24 @@ def backend_headers(cfg: Config) -> Dict[str, str]:
 
 def backend_get_job_payload(cfg: Config, job_id: str) -> Dict[str, Any]:
     url = f"{cfg.backend_base_url.rstrip('/')}/internal/jobs/{job_id}/payload"
-    r = requests.get(url, headers=backend_headers(cfg), timeout=30)
-    r.raise_for_status()
-    return r.json()
+    try:
+        r = requests.get(url, headers=backend_headers(cfg), timeout=30)
+        r.raise_for_status()
+        return r.json()
+    except requests.HTTPError as e:
+        code = getattr(e.response, "status_code", None)
+        raise StageError("backend_payload_http_error", f"status={code}") from e
+    except Exception as e:
+        raise StageError("backend_payload_failed") from e
 
 
 def backend_complete(cfg: Config, job_id: str, files: list[dict]) -> None:
     url = f"{cfg.backend_base_url.rstrip('/')}/internal/jobs/{job_id}/complete"
-    r = requests.post(url, headers=backend_headers(cfg), json={"files": files}, timeout=30)
-    r.raise_for_status()
+    try:
+        r = requests.post(url, headers=backend_headers(cfg), json={"files": files}, timeout=30)
+        r.raise_for_status()
+    except Exception as e:
+        raise StageError("backend_complete_failed") from e
 
 
 def backend_fail(cfg: Config, job_id: str, message: str) -> None:
@@ -186,7 +203,7 @@ def run_excel_runner(cfg: Config, payload_path: Path) -> Dict[str, Any]:
 
     if proc.returncode != 0:
         # Avoid printing full runner output (may include paths).
-        raise RuntimeError(f"excel_runner failed (code={proc.returncode})")
+        raise StageError("excel_runner_failed", f"code={proc.returncode}")
 
     try:
         return json.loads(out)
@@ -229,17 +246,23 @@ def process_job(cfg: Config, s3, job_id: str, package_id: str) -> None:
     client_key = assets_keys["client_sign_key"]
 
     template_path = work_dir / "template.xlsm"
-    s3_download(s3, bucket=cfg.s3_bucket, key=template_key, dst=template_path)
+    try:
+        s3_download(s3, bucket=cfg.s3_bucket, key=template_key, dst=template_path)
+    except Exception as e:
+        raise StageError("s3_download_template_failed") from e
 
     # Download assets to known local names
     logo_path = work_dir / "assets" / "logo.png"
     seal_path = work_dir / "assets" / "seal.png"
     director_path = work_dir / "assets" / "director_sign.png"
     client_path = work_dir / "assets" / "client_sign.png"
-    s3_download(s3, bucket=cfg.s3_bucket, key=logo_key, dst=logo_path)
-    s3_download(s3, bucket=cfg.s3_bucket, key=seal_key, dst=seal_path)
-    s3_download(s3, bucket=cfg.s3_bucket, key=director_key, dst=director_path)
-    s3_download(s3, bucket=cfg.s3_bucket, key=client_key, dst=client_path)
+    try:
+        s3_download(s3, bucket=cfg.s3_bucket, key=logo_key, dst=logo_path)
+        s3_download(s3, bucket=cfg.s3_bucket, key=seal_key, dst=seal_path)
+        s3_download(s3, bucket=cfg.s3_bucket, key=director_key, dst=director_path)
+        s3_download(s3, bucket=cfg.s3_bucket, key=client_key, dst=client_path)
+    except Exception as e:
+        raise StageError("s3_download_assets_failed") from e
 
     runner_payload = build_runner_payload(
         template_path=template_path,
@@ -258,7 +281,7 @@ def process_job(cfg: Config, s3, job_id: str, package_id: str) -> None:
 
     result = run_excel_runner(cfg, payload_path)
     if result.get("status") != "ok":
-        raise RuntimeError("excel_runner returned error status")
+        raise StageError("excel_runner_error_status")
 
     output_dir = Path(result["output_dir"])
     pdf_files = list(result.get("pdf_files") or [])
@@ -284,7 +307,10 @@ def process_job(cfg: Config, s3, job_id: str, package_id: str) -> None:
             continue
         src = output_dir / pdf_name
         key = f"packages/{package_id}/{storage_name}"
-        s3_upload(s3, bucket=cfg.s3_bucket, key=key, src=src, content_type="application/pdf")
+        try:
+            s3_upload(s3, bucket=cfg.s3_bucket, key=key, src=src, content_type="application/pdf")
+        except Exception as e:
+            raise StageError("s3_upload_pdf_failed") from e
         files_for_backend.append(
             {
                 "doc_type": doc_type,
@@ -297,7 +323,10 @@ def process_job(cfg: Config, s3, job_id: str, package_id: str) -> None:
 
     # Upload bundle
     bundle_key = f"packages/{package_id}/bundle_v1.zip"
-    s3_upload(s3, bucket=cfg.s3_bucket, key=bundle_key, src=zip_path, content_type="application/zip")
+    try:
+        s3_upload(s3, bucket=cfg.s3_bucket, key=bundle_key, src=zip_path, content_type="application/zip")
+    except Exception as e:
+        raise StageError("s3_upload_bundle_failed") from e
     files_for_backend.append(
         {
             "doc_type": "bundle",
@@ -339,13 +368,16 @@ def main() -> int:
         try:
             process_job(cfg, s3, job_id, package_id)
         except Exception as e:
-            # Do not include PII in message. Keep it short.
-            msg = f"worker_failed: {type(e).__name__}"
+            # Do not include PII in message. Keep it short and stage-based.
+            if isinstance(e, StageError):
+                msg = str(e)[:400]
+            else:
+                msg = f"worker_failed: {type(e).__name__}"
             try:
                 backend_fail(cfg, job_id, msg)
             except Exception:
                 pass
-            log(f"[job] error job_id={job_id} package_id={package_id} ({type(e).__name__})")
+            log(f"[job] error job_id={job_id} package_id={package_id} ({msg})")
             # small backoff to avoid tight-loop on repeated failures
             time.sleep(1)
 

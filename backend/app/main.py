@@ -345,10 +345,15 @@ def internal_job_complete(job_id: str, body: schemas.InternalCompleteIn, db: Ses
         if not doc_type or not storage_key or not filename:
             raise HTTPException(status_code=400, detail="Invalid file item")
 
+        try:
+            doc_type_enum = models.DocumentType(str(doc_type))
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"Invalid doc_type: {doc_type!r}")
+
         doc = models.Document(
             id=new_id(),
             package_id=pkg.id,
-            doc_type=models.DocumentType(doc_type),
+            doc_type=doc_type_enum,
             version=int(f.get("version") or 1),
             filename=str(filename),
             storage_key=str(storage_key),
