@@ -56,6 +56,11 @@ def ensure_dir(path: Path) -> None:
 
 def copy_file(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if src.resolve() == dst.resolve():
+            return
+    except Exception:
+        pass
     shutil.copy2(src, dst)
 
 
