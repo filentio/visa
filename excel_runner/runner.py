@@ -204,11 +204,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
 
     session: Optional[ExcelSession] = None
+    work_dir_path: Optional[Path] = None
     try:
         payload = read_payload(args.payload)
 
         template_path = Path(_req_str(payload, "template_path"))
         work_dir = Path(_req_str(payload, "work_dir"))
+        work_dir_path = work_dir
         if not template_path.exists():
             raise PayloadError(f"template_path not found: {template_path}")
 
@@ -228,6 +230,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             ask_to_update_links=False,
             calculation=XL_CALC_AUTOMATIC,
         )
+        # Expose Excel PID for external watchdog/timeout handling.
+        try:
+            if session.pid:
+                (paths["work_dir"] / "excel_pid.txt").write_text(str(session.pid), encoding="utf-8")
+        except Exception:
+            pass
 
         wb = session.workbook
         excel = session.excel
@@ -290,6 +298,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 2
     finally:
         cleanup_excel_session(session)
+        try:
+            if work_dir_path is not None:
+                pid_file = (work_dir_path / "excel_pid.txt")
+                if pid_file.exists():
+                    pid_file.unlink()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

@@ -35,6 +35,7 @@ pip install -r excel_runner\requirements.txt
 - `S3_REGION` (обычно `us-east-1`)
 - `WORK_ROOT` (опционально, default: `C:\temp\visa_jobs`)
 - `RUNNER_SCRIPT` (опционально, default: `excel_runner\runner.py` относительно корня репо)
+- `RUNNER_TIMEOUT_SECONDS` (опционально, default: `600`) — таймаут на subprocess вызов runner’а
 
 ### Запуск
 

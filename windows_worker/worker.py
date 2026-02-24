@@ -49,6 +49,47 @@ class StageError(RuntimeError):
         super().__init__(msg)
 
 
+def _int_env(name: str, default: int) -> int:
+    v = os.environ.get(name)
+    if not v:
+        return default
+    try:
+        return int(v)
+    except Exception:
+        return default
+
+
+def _backoff_sleep(attempt: int, *, base: float = 1.0, cap: float = 16.0) -> None:
+    # attempt starts at 1
+    delay = min(cap, base * (2 ** (attempt - 1)))
+    time.sleep(delay)
+
+
+def _taskkill(pid: int) -> None:
+    try:
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        pass
+
+
+def _read_excel_pid(work_dir: Path) -> Optional[int]:
+    try:
+        p = work_dir / "excel_pid.txt"
+        if not p.exists():
+            return None
+        s = p.read_text(encoding="utf-8").strip()
+        if not s:
+            return None
+        return int(s)
+    except Exception:
+        return None
+
+
 @dataclass(frozen=True)
 class Config:
     backend_base_url: str
@@ -215,11 +256,30 @@ def run_excel_runner(cfg: Config, payload_path: Path) -> Dict[str, Any]:
         else:
             raise RuntimeError(f"Runner script not found: {cfg.runner_script}")
 
-    cmd = [sys.executable, str(runner), "--payload", str(payload_path)]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    out = (proc.stdout or "").strip()
-    err = (proc.stderr or "").strip()
+    timeout_s = _int_env("RUNNER_TIMEOUT_SECONDS", 600)
 
+    cmd = [sys.executable, str(runner), "--payload", str(payload_path)]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        out, _err = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired as e:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        try:
+            proc.communicate(timeout=10)
+        except Exception:
+            pass
+
+        # Kill Excel instance if runner managed to write PID.
+        work_dir = payload_path.parent
+        pid = _read_excel_pid(work_dir)
+        if pid:
+            _taskkill(pid)
+        raise StageError("excel_timeout", f"timeout_s={timeout_s}") from e
+
+    out = (out or "").strip()
     if proc.returncode != 0:
         # Avoid printing full runner output (may include paths).
         raise StageError("excel_runner_failed", f"code={proc.returncode}")
@@ -266,23 +326,31 @@ def process_job(cfg: Config, s3, job_id: str, package_id: str) -> None:
     client_key = assets_keys["client_sign_key"]
 
     template_path = work_dir / "template.xlsm"
-    try:
-        s3_download(s3, bucket=cfg.s3_bucket, key=template_key, dst=template_path)
-    except Exception as e:
-        raise StageError("s3_download_template_failed") from e
+    for attempt in range(1, 4):
+        try:
+            s3_download(s3, bucket=cfg.s3_bucket, key=template_key, dst=template_path)
+            break
+        except Exception as e:
+            if attempt >= 3:
+                raise StageError("s3_download_template_failed") from e
+            _backoff_sleep(attempt)
 
     # Download assets to known local names
     logo_path = work_dir / "assets" / "logo.png"
     seal_path = work_dir / "assets" / "seal.png"
     director_path = work_dir / "assets" / "director_sign.png"
     client_path = work_dir / "assets" / "client_sign.png"
-    try:
-        s3_download(s3, bucket=cfg.s3_bucket, key=logo_key, dst=logo_path)
-        s3_download(s3, bucket=cfg.s3_bucket, key=seal_key, dst=seal_path)
-        s3_download(s3, bucket=cfg.s3_bucket, key=director_key, dst=director_path)
-        s3_download(s3, bucket=cfg.s3_bucket, key=client_key, dst=client_path)
-    except Exception as e:
-        raise StageError("s3_download_assets_failed") from e
+    for attempt in range(1, 4):
+        try:
+            s3_download(s3, bucket=cfg.s3_bucket, key=logo_key, dst=logo_path)
+            s3_download(s3, bucket=cfg.s3_bucket, key=seal_key, dst=seal_path)
+            s3_download(s3, bucket=cfg.s3_bucket, key=director_key, dst=director_path)
+            s3_download(s3, bucket=cfg.s3_bucket, key=client_key, dst=client_path)
+            break
+        except Exception as e:
+            if attempt >= 3:
+                raise StageError("s3_download_assets_failed") from e
+            _backoff_sleep(attempt)
 
     runner_payload = build_runner_payload(
         template_path=template_path,
@@ -299,9 +367,21 @@ def process_job(cfg: Config, s3, job_id: str, package_id: str) -> None:
     payload_path = work_dir / "payload.json"
     payload_path.write_text(json.dumps(runner_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    result = run_excel_runner(cfg, payload_path)
-    if result.get("status") != "ok":
-        raise StageError("excel_runner_error_status")
+    # excel_runner retry policy: max 1 retry for runner failures/timeouts.
+    result: Dict[str, Any] | None = None
+    for attempt in range(1, 3):
+        try:
+            result = run_excel_runner(cfg, payload_path)
+            if result.get("status") != "ok":
+                raise StageError("excel_runner_error_status")
+            break
+        except StageError as e:
+            if e.stage in ("excel_runner_failed", "excel_timeout") and attempt < 2:
+                _backoff_sleep(attempt)
+                continue
+            raise
+    if result is None:
+        raise StageError("excel_runner_failed")
 
     output_dir = Path(result["output_dir"])
     pdf_files = list(result.get("pdf_files") or [])
@@ -359,6 +439,11 @@ def process_job(cfg: Config, s3, job_id: str, package_id: str) -> None:
 
     backend_complete(cfg, job_id, files_for_backend)
     log(f"[job] done job_id={job_id} package_id={package_id}")
+    # Cleanup on success.
+    try:
+        shutil.rmtree(work_dir)
+    except Exception:
+        pass
 
 
 def main() -> int:
