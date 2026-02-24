@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 import requests
 from fastapi import Depends, FastAPI, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.sql import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -306,6 +307,7 @@ def internal_job_payload(job_id: str, db: Session = Depends(get_db)) -> schemas.
             "country_display": pkg.country_display,
         },
         job={
+            "version": int(getattr(job, "version", 1)),
             "currency_symbol": currency_symbol,
             "fx_rate": float(pkg.fx_rate),
             "salary_rub": float(pkg.salary_rub),
@@ -328,11 +330,29 @@ def internal_job_payload(job_id: str, db: Session = Depends(get_db)) -> schemas.
     )
 
 
+@app.post("/internal/jobs/{job_id}/start", dependencies=[Depends(require_internal_key)])
+def internal_job_start(job_id: str, db: Session = Depends(get_db)) -> Dict[str, Any]:
+    job = db.execute(select(models.Job).where(models.Job.id == job_id)).scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+
+    if job.status != models.JobStatus.queued:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="job is not queued")
+
+    job.status = models.JobStatus.running
+    job.started_at = func.now()
+    job.error_message = None
+    db.commit()
+    return {"status": "ok", "job_id": job.id}
+
+
 @app.post("/internal/jobs/{job_id}/complete", dependencies=[Depends(require_internal_key)])
 def internal_job_complete(job_id: str, body: schemas.InternalCompleteIn, db: Session = Depends(get_db)) -> Dict[str, Any]:
     job = db.execute(select(models.Job).where(models.Job.id == job_id)).scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
+    if job.status != models.JobStatus.running:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="job is not running")
 
     pkg = db.execute(select(models.Package).where(models.Package.id == job.package_id)).scalar_one()
 
@@ -363,6 +383,7 @@ def internal_job_complete(job_id: str, body: schemas.InternalCompleteIn, db: Ses
 
     job.status = models.JobStatus.done
     job.error_message = None
+    job.finished_at = func.now()
     pkg.status = models.PackageStatus.generated
 
     db.commit()
@@ -374,11 +395,14 @@ def internal_job_fail(job_id: str, body: schemas.InternalFailIn, db: Session = D
     job = db.execute(select(models.Job).where(models.Job.id == job_id)).scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
+    if job.status != models.JobStatus.running:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="job is not running")
 
     pkg = db.execute(select(models.Package).where(models.Package.id == job.package_id)).scalar_one()
 
     job.status = models.JobStatus.error
     job.error_message = body.error_message[:2000]
+    job.finished_at = func.now()
     pkg.status = models.PackageStatus.error
     db.commit()
     return {"status": "ok", "job_id": job.id}

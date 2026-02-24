@@ -80,6 +80,8 @@ class Package(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     status: Mapped[PackageStatus] = mapped_column(Enum(PackageStatus), nullable=False, default=PackageStatus.created)
+    # Tracks last allocated generation version (v1, v2, ...). v0 means nothing generated yet.
+    version_counter: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     client_id: Mapped[str] = mapped_column(ForeignKey("clients.id"), nullable=False)
     company_id: Mapped[str] = mapped_column(ForeignKey("companies.id"), nullable=False)
@@ -118,7 +120,11 @@ class Job(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     package_id: Mapped[str] = mapped_column(ForeignKey("packages.id"), nullable=False)
     status: Mapped[JobStatus] = mapped_column(Enum(JobStatus), nullable=False, default=JobStatus.queued)
+    # Document bundle version allocated for this job (v1, v2, ...).
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(

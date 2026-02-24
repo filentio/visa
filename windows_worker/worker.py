@@ -143,6 +143,25 @@ def backend_fail(cfg: Config, job_id: str, message: str) -> None:
     r.raise_for_status()
 
 
+def backend_start(cfg: Config, job_id: str) -> bool:
+    """
+    Returns True if job moved to running.
+    Returns False if backend returned 409 (already running/done/error).
+    """
+    url = f"{cfg.backend_base_url.rstrip('/')}/internal/jobs/{job_id}/start"
+    try:
+        r = requests.post(url, headers=backend_headers(cfg), timeout=30)
+        if r.status_code == 409:
+            return False
+        r.raise_for_status()
+        return True
+    except requests.HTTPError as e:
+        code = getattr(e.response, "status_code", None)
+        raise StageError("backend_start_http_error", f"status={code}") from e
+    except Exception as e:
+        raise StageError("backend_start_failed") from e
+
+
 def build_runner_payload(
     *,
     template_path: Path,
@@ -366,6 +385,9 @@ def main() -> int:
             continue
 
         try:
+            if not backend_start(cfg, job_id):
+                log(f"[job] skip job_id={job_id} package_id={package_id} (already started/finished)")
+                continue
             process_job(cfg, s3, job_id, package_id)
         except Exception as e:
             # Do not include PII in message. Keep it short and stage-based.
