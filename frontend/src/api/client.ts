@@ -1,10 +1,14 @@
 import type {
   Company,
+  ClientDetail,
+  ClientPackageItem,
+  ClientSearchItem,
   DownloadResponse,
   GeneratePackageRequest,
   GeneratePackageResponse,
   JobStatusResponse,
   PackageResponse,
+  RegenerateResponse,
 } from "./types";
 
 export class ApiError extends Error {
@@ -23,6 +27,10 @@ function requireBaseUrl(): string {
     throw new ApiError("VITE_API_BASE_URL is not set. Create `.env` or use `.env.example`.");
   }
   return BASE_URL;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
 async function requestJson<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
@@ -45,12 +53,12 @@ async function requestJson<T>(path: string, init?: RequestInit & { timeoutMs?: n
 
     const contentType = res.headers.get("content-type") || "";
     const isJson = contentType.includes("application/json");
-    const body = isJson ? await res.json().catch(() => null) : await res.text().catch(() => "");
+    const body: unknown = isJson ? await res.json().catch(() => null) : await res.text().catch(() => "");
 
     if (!res.ok) {
       const msg =
-        (typeof body === "object" && body && ("detail" in body || "message" in body)
-          ? String((body as any).detail ?? (body as any).message)
+        (isRecord(body) && ("detail" in body || "message" in body)
+          ? String((body["detail"] ?? body["message"]) as unknown)
           : typeof body === "string" && body
             ? body
             : `Request failed: ${res.status}`) || `Request failed: ${res.status}`;
@@ -58,12 +66,15 @@ async function requestJson<T>(path: string, init?: RequestInit & { timeoutMs?: n
     }
 
     return body as T;
-  } catch (e: any) {
-    if (e?.name === "AbortError") {
+  } catch (e: unknown) {
+    if (isRecord(e) && e["name"] === "AbortError") {
       throw new ApiError("API request timeout");
     }
     if (e instanceof ApiError) throw e;
-    throw new ApiError(e?.message ? String(e.message) : "Network error");
+    if (isRecord(e) && typeof e["message"] === "string" && e["message"]) {
+      throw new ApiError(String(e["message"]));
+    }
+    throw new ApiError("Network error");
   } finally {
     window.clearTimeout(t);
   }
@@ -90,14 +101,38 @@ export async function getPackage(packageId: string): Promise<PackageResponse> {
 }
 
 export async function getDownloadUrl(packageId: string): Promise<string> {
-  const res: any = await requestJson<any>(`/packages/${encodeURIComponent(packageId)}/download`, { method: "GET" });
+  const res: unknown = await requestJson<unknown>(`/packages/${encodeURIComponent(packageId)}/download`, { method: "GET" });
   if (typeof res === "string") return res;
-  if (res && typeof res === "object" && typeof res.url === "string") return res.url;
+  if (isRecord(res) && typeof res["url"] === "string") return res["url"];
   throw new ApiError("Unexpected download response");
 }
 
 export async function presignFile(key: string): Promise<string> {
   const res = await requestJson<DownloadResponse>(`/files/presign?key=${encodeURIComponent(key)}`, { method: "GET" });
   return res.url;
+}
+
+export async function searchClients(query: string): Promise<ClientSearchItem[]> {
+  const q = query.trim();
+  const qs = `?query=${encodeURIComponent(q)}`;
+  return requestJson<ClientSearchItem[]>(`/clients${qs}`, { method: "GET" });
+}
+
+export async function getClient(clientId: string): Promise<ClientDetail> {
+  return requestJson<ClientDetail>(`/clients/${encodeURIComponent(clientId)}`, { method: "GET" });
+}
+
+export async function getClientPackages(clientId: string): Promise<ClientPackageItem[]> {
+  return requestJson<ClientPackageItem[]>(`/clients/${encodeURIComponent(clientId)}/packages`, { method: "GET" });
+}
+
+export async function regeneratePackage(packageId: string): Promise<RegenerateResponse> {
+  const res = await requestJson<{ job_id: string; package_id: string }>(`/packages/${encodeURIComponent(packageId)}/regenerate`, {
+    method: "POST",
+    body: JSON.stringify({}),
+    timeoutMs: 30_000,
+  });
+  if (!res?.job_id || !res?.package_id) throw new ApiError("Unexpected regenerate response");
+  return { job_id: res.job_id, package_id: res.package_id };
 }
 

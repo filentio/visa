@@ -70,3 +70,36 @@ export type Company = {
   name: string;
 };
 
+export type ClientSearchItem = {
+  client_id: string;
+  full_name: string;
+  passport_masked: string;
+  dob: string;
+  issuing_country?: string | null;
+  created_at: string;
+};
+
+export type ClientDetail = {
+  client_id: string;
+  full_name: string;
+  passport_masked: string;
+  dob: string;
+  issuing_country?: string | null;
+  country_display: string;
+  created_at: string;
+};
+
+export type ClientPackageItem = {
+  package_id: string;
+  status: "generated" | "error" | "draft";
+  version_counter: number;
+  company: { company_id: string; name: string };
+  created_at: string;
+  updated_at: string;
+};
+
+export type RegenerateResponse = {
+  job_id: string;
+  package_id: string;
+};
+

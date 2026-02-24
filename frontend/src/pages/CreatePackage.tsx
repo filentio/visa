@@ -259,7 +259,10 @@ export function CreatePackage() {
               <select
                 className="input"
                 value={req.job.currency}
-                onChange={(e) => setReq({ ...req, job: { ...req.job, currency: e.target.value as any } })}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "USD" || v === "AED") setReq({ ...req, job: { ...req.job, currency: v } });
+                }}
                 disabled={isPolling}
               >
                 <option value="USD">USD</option>
@@ -271,7 +274,10 @@ export function CreatePackage() {
               <select
                 className="input"
                 value={req.job.fx_source}
-                onChange={(e) => setReq({ ...req, job: { ...req.job, fx_source: e.target.value as any } })}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === "manual" || v === "cbr") setReq({ ...req, job: { ...req.job, fx_source: v } });
+                }}
                 disabled={isPolling}
               >
                 <option value="manual">manual</option>
@@ -308,7 +314,13 @@ export function CreatePackage() {
               className="input"
               value={req.templates.contract_template}
               onChange={(e) =>
-                setReq({ ...req, templates: { ...req.templates, contract_template: e.target.value as any } })
+                setReq({
+                  ...req,
+                  templates: {
+                    ...req.templates,
+                    contract_template: e.target.value === "договор2" ? "договор2" : "договор",
+                  },
+                })
               }
               disabled={isPolling}
             >
@@ -323,7 +335,13 @@ export function CreatePackage() {
               className="input"
               value={req.templates.insurance_template}
               onChange={(e) =>
-                setReq({ ...req, templates: { ...req.templates, insurance_template: e.target.value as any } })
+                setReq({
+                  ...req,
+                  templates: {
+                    ...req.templates,
+                    insurance_template: e.target.value === "РГС" ? "РГС" : "страховка",
+                  },
+                })
               }
               disabled={isPolling}
             >

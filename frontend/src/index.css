@@ -210,3 +210,49 @@ textarea.input {
 .link:hover {
   text-decoration: underline;
 }
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.table th,
+.table td {
+  padding: 10px 8px;
+  border-bottom: 1px solid #e2e8f0;
+  text-align: left;
+  vertical-align: top;
+}
+
+.tr-link {
+  cursor: pointer;
+}
+
+.tr-link:hover {
+  background: #f8fafc;
+}
+
+.pkglist {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pkgitem {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.verlist {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ver {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 12px;
+}

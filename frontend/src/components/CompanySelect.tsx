@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/set-state-in-effect */
 import { useEffect, useMemo, useState } from "react";
 import type { Company } from "../api/types";
 import { ApiError, listCompanies } from "../api/client";
