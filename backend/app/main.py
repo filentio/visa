@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 
 import requests
 from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 from sqlalchemy.sql import func
 from sqlalchemy.exc import IntegrityError
@@ -26,6 +27,14 @@ from .utils import (
 
 
 app = FastAPI(title="visa-backend")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.on_event("startup")
@@ -57,26 +66,28 @@ def generate_package(body: schemas.GeneratePackageIn, db: Session = Depends(get_
     if not company:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="company_id not found")
 
+    mrz = "\n".join([ln for ln in [body.client.mrz_line1, body.client.mrz_line2] if ln and ln.strip()]) or None
+
     issuing = body.client.issuing_country
-    if not issuing and body.client.mrz:
-        issuing = issuing_country_from_mrz(body.client.mrz)
+    if not issuing and mrz:
+        issuing = issuing_country_from_mrz(mrz)
     country_display = country_display_from_issuing(issuing)
 
-    # Address is not in the current request spec; generate placeholder if not provided.
-    address = body.address or "RUSSIA, Moscow, 119087, Akademik Tupolev str.14 apt.430"
+    # Address is not in the current request spec; generate placeholder.
+    address = "RUSSIA, Moscow, 119087, Akademik Tupolev str.14 apt.430"
 
     # FX rate
-    if body.fx_source == "manual":
-        if body.fx_rate is None:
+    if body.job.fx_source == "manual":
+        if body.job.fx_rate is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="fx_rate is required for manual fx")
-        fx_rate = float(body.fx_rate)
+        fx_rate = float(body.job.fx_rate)
     else:
         try:
-            fx_rate = _fetch_cbr_rate(body.currency)
+            fx_rate = _fetch_cbr_rate(body.job.currency)
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Failed to fetch CBR fx rate for {body.currency}: {e}",
+                detail=f"Failed to fetch CBR fx rate for {body.job.currency}: {e}",
             ) from e
 
     # Upsert client by passport_no + dob
@@ -91,13 +102,13 @@ def generate_package(body: schemas.GeneratePackageIn, db: Session = Depends(get_
             full_name=body.client.full_name,
             passport_no=body.client.passport_no,
             dob=body.client.dob,
-            mrz=body.client.mrz,
+            mrz=mrz,
             issuing_country=issuing,
         )
         db.add(client)
     else:
         client.full_name = body.client.full_name
-        client.mrz = body.client.mrz
+        client.mrz = mrz
         client.issuing_country = issuing
 
     # Package fields
@@ -121,16 +132,16 @@ def generate_package(body: schemas.GeneratePackageIn, db: Session = Depends(get_
         version_counter=0,
         client_id=client.id,
         company_id=company.id,
-        currency=models.Currency(body.currency),
-        fx_source=models.FxSource(body.fx_source),
+        currency=models.Currency(body.job.currency),
+        fx_source=models.FxSource(body.job.fx_source),
         fx_rate=fx_rate,
-        salary_rub=body.salary_rub,
-        position=body.position,
+        salary_rub=body.job.salary_rub,
+        position=body.job.position,
         start_date=start_date,
         contract_start_date=contract_start_date,
         contract_number=contract_number,
-        contract_template=body.contract_template,
-        insurance_template=body.insurance_template,
+        contract_template=body.templates.contract_template,
+        insurance_template=body.templates.insurance_template,
         country_display=country_display,
         address=address,
     )
@@ -156,7 +167,7 @@ def generate_package(body: schemas.GeneratePackageIn, db: Session = Depends(get_
         raise HTTPException(status_code=500, detail=f"DB integrity error: {e}") from e
 
     enqueue_job(job_id=job.id, package_id=package.id)
-    return schemas.GeneratePackageOut(job_id=job.id, package_id=package.id, version=job.version)
+    return schemas.GeneratePackageOut(job_id=job.id, package_id=package.id)
 
 
 @app.post("/packages/{package_id}/regenerate", response_model=schemas.RegenerateOut)
@@ -185,17 +196,13 @@ def regenerate_package(package_id: str, db: Session = Depends(get_db)) -> schema
     return schemas.RegenerateOut(job_id=job.id, package_id=pkg.id, version=next_version)
 
 
-@app.get("/companies", response_model=list[schemas.CompanyOut])
-def list_companies(db: Session = Depends(get_db)) -> list[schemas.CompanyOut]:
+@app.get("/companies", response_model=list[schemas.CompanyPublicOut])
+def list_companies(db: Session = Depends(get_db)) -> list[schemas.CompanyPublicOut]:
     companies = db.execute(select(models.Company).order_by(models.Company.created_at.asc())).scalars().all()
     return [
-        schemas.CompanyOut(
-            company_id=c.id,
+        schemas.CompanyPublicOut(
+            id=c.id,
             name=c.name,
-            seal_key=c.seal_key,
-            logo_key=c.logo_key,
-            director_sign_key=c.director_sign_key,
-            client_sign_key=c.client_sign_key,
         )
         for c in companies
     ]
@@ -232,7 +239,14 @@ def get_job(job_id: str, db: Session = Depends(get_db)) -> schemas.JobStatusOut:
     job = db.execute(select(models.Job).where(models.Job.id == job_id)).scalar_one_or_none()
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
-    return schemas.JobStatusOut(job_id=job.id, status=job.status.value, error_message=job.error_message)
+    return schemas.JobStatusOut(
+        job_id=job.id,
+        status=job.status.value,
+        error_message=job.error_message,
+        started_at=job.started_at.isoformat() if getattr(job, "started_at", None) else None,
+        finished_at=job.finished_at.isoformat() if getattr(job, "finished_at", None) else None,
+        version=int(getattr(job, "version", 1)),
+    )
 
 
 @app.get("/packages/{package_id}", response_model=schemas.PackageOut)
@@ -246,34 +260,72 @@ def get_package(package_id: str, db: Session = Depends(get_db)) -> schemas.Packa
         .scalars()
         .all()
     )
+    client = db.execute(select(models.Client).where(models.Client.id == pkg.client_id)).scalar_one()
+    company = db.execute(select(models.Company).where(models.Company.id == pkg.company_id)).scalar_one()
+
+    def _mask_passport(p: str) -> str:
+        s = str(p)
+        digits = [i for i, ch in enumerate(s) if ch.isalnum()]
+        if len(digits) <= 2:
+            return "*" * len(s)
+        keep = set(digits[-2:])
+        out = []
+        for i, ch in enumerate(s):
+            if i in keep:
+                out.append(ch)
+            elif ch.isalnum():
+                out.append("*")
+            else:
+                out.append(ch)
+        return "".join(out)
+
+    def _pkg_status() -> str:
+        if pkg.status == models.PackageStatus.created:
+            return "draft"
+        if pkg.status == models.PackageStatus.generated:
+            return "generated"
+        return "error"
+
+    def _doc_type(v: str) -> str:
+        if v == "bank":
+            return "bank_statement"
+        if v in ("contract", "insurance", "salary", "bundle"):
+            return v
+        return "other"
+
+    doc_out = []
+    for d in docs:
+        try:
+            url = presigned_get_url(key=d.storage_key, expires_seconds=3600)
+        except Exception:
+            url = None
+        doc_out.append(
+            schemas.PackageDocumentOut(
+                doc_type=_doc_type(d.doc_type.value),
+                version=d.version,
+                file_key=d.storage_key,
+                created_at=d.created_at.isoformat(),
+                presigned_url=url,
+            )
+        )
+
     return schemas.PackageOut(
         package_id=pkg.id,
-        status=pkg.status.value,
-        client_id=pkg.client_id,
-        company_id=pkg.company_id,
-        currency=pkg.currency.value,
-        fx_source=pkg.fx_source.value,
-        fx_rate=float(pkg.fx_rate),
-        start_date=pkg.start_date,
-        contract_start_date=pkg.contract_start_date,
-        contract_number=pkg.contract_number,
-        contract_template=pkg.contract_template,
-        insurance_template=pkg.insurance_template,
-        country_display=pkg.country_display,
-        address=pkg.address,
-        documents=[
-            schemas.DocumentOut(
-                doc_type=d.doc_type.value,
-                version=d.version,
-                filename=d.filename,
-                storage_key=d.storage_key,
-            )
-            for d in docs
-        ],
+        status=_pkg_status(),
+        version_counter=int(getattr(pkg, "version_counter", 0)),
+        client=schemas.PackageClientOut(
+            client_id=client.id,
+            full_name=client.full_name,
+            passport_masked=_mask_passport(client.passport_no),
+            dob=client.dob.isoformat(),
+            issuing_country=client.issuing_country,
+        ),
+        company=schemas.PackageCompanyOut(company_id=company.id, name=company.name),
+        documents=doc_out,
     )
 
 
-@app.get("/packages/{package_id}/download")
+@app.get("/packages/{package_id}/download", response_model=schemas.DownloadOut)
 def download_package_zip(package_id: str, db: Session = Depends(get_db)) -> Dict[str, Any]:
     """
     Return a presigned URL for the latest bundle ZIP.
@@ -290,7 +342,13 @@ def download_package_zip(package_id: str, db: Session = Depends(get_db)) -> Dict
     if not bundle:
         raise HTTPException(status_code=404, detail="bundle not found")
     url = presigned_get_url(key=bundle.storage_key, expires_seconds=3600)
-    return {"package_id": package_id, "bundle_key": bundle.storage_key, "url": url}
+    return {"url": url}
+
+
+@app.get("/files/presign", response_model=schemas.DownloadOut)
+def presign_file(key: str) -> Dict[str, Any]:
+    url = presigned_get_url(key=key, expires_seconds=3600)
+    return {"url": url}
 
 
 def _default_bank_template(currency: models.Currency) -> str:
