@@ -4,9 +4,9 @@ from datetime import date
 from typing import Any, Dict, Optional
 
 import requests
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.sql import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -330,19 +330,163 @@ def download_package_zip(package_id: str, db: Session = Depends(get_db)) -> Dict
     """
     Return a presigned URL for the latest bundle ZIP.
     """
-    bundle = (
-        db.execute(
-            select(models.Document)
-            .where(models.Document.package_id == package_id, models.Document.doc_type == models.DocumentType.bundle)
-            .order_by(models.Document.version.desc())
+    pkg = db.execute(select(models.Package).where(models.Package.id == package_id)).scalar_one_or_none()
+    if not pkg:
+        raise HTTPException(status_code=404, detail="package not found")
+
+    # Prefer bundle with version == package.version_counter, fallback to max bundle version.
+    bundle = None
+    try:
+        vc = int(getattr(pkg, "version_counter", 0))
+    except Exception:
+        vc = 0
+    if vc > 0:
+        bundle = (
+            db.execute(
+                select(models.Document).where(
+                    models.Document.package_id == package_id,
+                    models.Document.doc_type == models.DocumentType.bundle,
+                    models.Document.version == vc,
+                )
+            )
+            .scalars()
+            .first()
         )
-        .scalars()
-        .first()
-    )
+    if bundle is None:
+        bundle = (
+            db.execute(
+                select(models.Document)
+                .where(models.Document.package_id == package_id, models.Document.doc_type == models.DocumentType.bundle)
+                .order_by(models.Document.version.desc())
+            )
+            .scalars()
+            .first()
+        )
     if not bundle:
         raise HTTPException(status_code=404, detail="bundle not found")
     url = presigned_get_url(key=bundle.storage_key, expires_seconds=3600)
     return {"url": url}
+
+
+@app.get("/clients", response_model=list[schemas.ClientSearchItem])
+def search_clients(
+    query: str | None = Query(default=None),
+    limit: int = Query(default=30, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> list[schemas.ClientSearchItem]:
+    q = (query or "").strip()
+    stmt = select(models.Client).order_by(models.Client.created_at.desc()).limit(limit)
+    if q:
+        stmt = (
+            select(models.Client)
+            .where(or_(models.Client.full_name.ilike(f"%{q}%"), models.Client.passport_no.like(f"%{q}%")))
+            .order_by(models.Client.created_at.desc())
+            .limit(limit)
+        )
+    clients = db.execute(stmt).scalars().all()
+
+    def _mask_passport(p: str) -> str:
+        s = str(p)
+        digits = [i for i, ch in enumerate(s) if ch.isalnum()]
+        if len(digits) <= 2:
+            return "*" * len(s)
+        keep = set(digits[-2:])
+        out = []
+        for i, ch in enumerate(s):
+            if i in keep:
+                out.append(ch)
+            elif ch.isalnum():
+                out.append("*")
+            else:
+                out.append(ch)
+        return "".join(out)
+
+    return [
+        schemas.ClientSearchItem(
+            client_id=c.id,
+            full_name=c.full_name,
+            passport_masked=_mask_passport(c.passport_no),
+            dob=c.dob.isoformat(),
+            issuing_country=c.issuing_country,
+            created_at=c.created_at.isoformat(),
+        )
+        for c in clients
+    ]
+
+
+@app.get("/clients/{client_id}", response_model=schemas.ClientDetail)
+def get_client(client_id: str, db: Session = Depends(get_db)) -> schemas.ClientDetail:
+    c = db.execute(select(models.Client).where(models.Client.id == client_id)).scalar_one_or_none()
+    if not c:
+        raise HTTPException(status_code=404, detail="client not found")
+
+    def _mask_passport(p: str) -> str:
+        s = str(p)
+        digits = [i for i, ch in enumerate(s) if ch.isalnum()]
+        if len(digits) <= 2:
+            return "*" * len(s)
+        keep = set(digits[-2:])
+        out = []
+        for i, ch in enumerate(s):
+            if i in keep:
+                out.append(ch)
+            elif ch.isalnum():
+                out.append("*")
+            else:
+                out.append(ch)
+        return "".join(out)
+
+    return schemas.ClientDetail(
+        client_id=c.id,
+        full_name=c.full_name,
+        passport_masked=_mask_passport(c.passport_no),
+        dob=c.dob.isoformat(),
+        issuing_country=c.issuing_country,
+        country_display=country_display_from_issuing(c.issuing_country),
+        created_at=c.created_at.isoformat(),
+    )
+
+
+@app.get("/clients/{client_id}/packages", response_model=list[schemas.ClientPackageItem])
+def get_client_packages(client_id: str, db: Session = Depends(get_db)) -> list[schemas.ClientPackageItem]:
+    # Ensure client exists
+    c = db.execute(select(models.Client.id).where(models.Client.id == client_id)).scalar_one_or_none()
+    if not c:
+        raise HTTPException(status_code=404, detail="client not found")
+
+    pkgs = (
+        db.execute(select(models.Package).where(models.Package.client_id == client_id).order_by(models.Package.created_at.desc()))
+        .scalars()
+        .all()
+    )
+
+    company_ids = {p.company_id for p in pkgs}
+    companies = (
+        db.execute(select(models.Company).where(models.Company.id.in_(company_ids))).scalars().all() if company_ids else []
+    )
+    company_map = {co.id: co for co in companies}
+
+    def _pkg_status(p: models.Package) -> str:
+        if p.status == models.PackageStatus.created:
+            return "draft"
+        if p.status == models.PackageStatus.generated:
+            return "generated"
+        return "error"
+
+    out: list[schemas.ClientPackageItem] = []
+    for p in pkgs:
+        co = company_map.get(p.company_id)
+        out.append(
+            schemas.ClientPackageItem(
+                package_id=p.id,
+                status=_pkg_status(p),  # type: ignore[arg-type]
+                version_counter=int(getattr(p, "version_counter", 0)),
+                company=schemas.PackageCompanyOut(company_id=p.company_id, name=co.name if co else p.company_id),
+                created_at=p.created_at.isoformat(),
+                updated_at=p.updated_at.isoformat(),
+            )
+        )
+    return out
 
 
 @app.get("/files/presign", response_model=schemas.DownloadOut)

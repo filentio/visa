@@ -132,3 +132,31 @@ class CompanyOut(BaseModel):
     director_sign_key: str
     client_sign_key: str
 
+
+class ClientSearchItem(BaseModel):
+    client_id: str
+    full_name: str
+    passport_masked: str
+    dob: str
+    issuing_country: Optional[str] = None
+    created_at: str
+
+
+class ClientDetail(BaseModel):
+    client_id: str
+    full_name: str
+    passport_masked: str
+    dob: str
+    issuing_country: Optional[str] = None
+    country_display: str
+    created_at: str
+
+
+class ClientPackageItem(BaseModel):
+    package_id: str
+    status: Literal["generated", "error", "draft"]
+    version_counter: int
+    company: PackageCompanyOut
+    created_at: str
+    updated_at: str
+
