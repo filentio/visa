@@ -36,6 +36,13 @@ class GeneratePackageIn(BaseModel):
 class GeneratePackageOut(BaseModel):
     job_id: str
     package_id: str
+    version: int | None = None
+
+
+class RegenerateOut(BaseModel):
+    job_id: str
+    package_id: str
+    version: int
 
 
 class JobStatusOut(BaseModel):

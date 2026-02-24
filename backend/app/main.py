@@ -118,6 +118,7 @@ def generate_package(body: schemas.GeneratePackageIn, db: Session = Depends(get_
     package = models.Package(
         id=new_id(),
         status=models.PackageStatus.created,
+        version_counter=0,
         client_id=client.id,
         company_id=company.id,
         currency=models.Currency(body.currency),
@@ -135,7 +136,17 @@ def generate_package(body: schemas.GeneratePackageIn, db: Session = Depends(get_
     )
     db.add(package)
 
-    job = models.Job(id=new_id(), package_id=package.id, status=models.JobStatus.queued, error_message=None)
+    # Allocate v1 for the initial generation.
+    package.version_counter = 1
+    job = models.Job(
+        id=new_id(),
+        package_id=package.id,
+        status=models.JobStatus.queued,
+        version=1,
+        error_message=None,
+        started_at=None,
+        finished_at=None,
+    )
     db.add(job)
 
     try:
@@ -145,7 +156,33 @@ def generate_package(body: schemas.GeneratePackageIn, db: Session = Depends(get_
         raise HTTPException(status_code=500, detail=f"DB integrity error: {e}") from e
 
     enqueue_job(job_id=job.id, package_id=package.id)
-    return schemas.GeneratePackageOut(job_id=job.id, package_id=package.id)
+    return schemas.GeneratePackageOut(job_id=job.id, package_id=package.id, version=job.version)
+
+
+@app.post("/packages/{package_id}/regenerate", response_model=schemas.RegenerateOut)
+def regenerate_package(package_id: str, db: Session = Depends(get_db)) -> schemas.RegenerateOut:
+    pkg = db.execute(select(models.Package).where(models.Package.id == package_id)).scalar_one_or_none()
+    if not pkg:
+        raise HTTPException(status_code=404, detail="package not found")
+
+    # Allocate next version.
+    next_version = int(getattr(pkg, "version_counter", 0)) + 1
+    pkg.version_counter = next_version
+
+    job = models.Job(
+        id=new_id(),
+        package_id=pkg.id,
+        status=models.JobStatus.queued,
+        version=next_version,
+        error_message=None,
+        started_at=None,
+        finished_at=None,
+    )
+    db.add(job)
+    db.commit()
+
+    enqueue_job(job_id=job.id, package_id=pkg.id)
+    return schemas.RegenerateOut(job_id=job.id, package_id=pkg.id, version=next_version)
 
 
 @app.get("/companies", response_model=list[schemas.CompanyOut])
@@ -356,7 +393,9 @@ def internal_job_complete(job_id: str, body: schemas.InternalCompleteIn, db: Ses
 
     pkg = db.execute(select(models.Package).where(models.Package.id == job.package_id)).scalar_one()
 
-    # Create document rows (version=1 MVP).
+    expected_version = int(getattr(job, "version", 1))
+
+    # Create document rows (versioned).
     for f in body.files:
         doc_type = f.get("doc_type")
         storage_key = f.get("storage_key")
@@ -370,11 +409,15 @@ def internal_job_complete(job_id: str, body: schemas.InternalCompleteIn, db: Ses
         except Exception:
             raise HTTPException(status_code=400, detail=f"Invalid doc_type: {doc_type!r}")
 
+        file_version = f.get("version")
+        if file_version is not None and int(file_version) != expected_version:
+            raise HTTPException(status_code=400, detail="version mismatch")
+
         doc = models.Document(
             id=new_id(),
             package_id=pkg.id,
             doc_type=doc_type_enum,
-            version=int(f.get("version") or 1),
+            version=expected_version,
             filename=str(filename),
             storage_key=str(storage_key),
             content_type=str(content_type),

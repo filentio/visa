@@ -257,6 +257,7 @@ def process_job(cfg: Config, s3, job_id: str, package_id: str) -> None:
 
     internal = backend_get_job_payload(cfg, job_id)
     template_key = internal["template_key"]
+    version = int((internal.get("job") or {}).get("version") or 1)
 
     assets_keys = internal["company"]["assets"]
     logo_key = assets_keys["logo_key"]
@@ -308,15 +309,15 @@ def process_job(cfg: Config, s3, job_id: str, package_id: str) -> None:
         raise RuntimeError("No PDFs produced by runner")
 
     # ZIP bundle (exact filenames inside archive)
-    zip_path = make_bundle_zip(output_dir, pdf_names=pdf_files, zip_name="bundle.zip")
+    zip_path = make_bundle_zip(output_dir, pdf_names=pdf_files, zip_name=f"bundle_v{version}.zip")
 
     # Upload PDFs
     files_for_backend: list[dict] = []
     pdf_map = {
-        "Contract.pdf": ("contract", "Contract_v1.pdf"),
-        "Bank_Statement_6m.pdf": ("bank", "Bank_Statement_6m_v1.pdf"),
-        "Insurance.pdf": ("insurance", "Insurance_v1.pdf"),
-        "Salary_Certificate.pdf": ("salary", "Salary_Certificate_v1.pdf"),
+        "Contract.pdf": ("contract", "Contract"),
+        "Bank_Statement_6m.pdf": ("bank", "Bank_Statement_6m"),
+        "Insurance.pdf": ("insurance", "Insurance"),
+        "Salary_Certificate.pdf": ("salary", "Salary_Certificate"),
     }
 
     for pdf_name in pdf_files:
@@ -325,7 +326,7 @@ def process_job(cfg: Config, s3, job_id: str, package_id: str) -> None:
             # skip unexpected file names
             continue
         src = output_dir / pdf_name
-        key = f"packages/{package_id}/{storage_name}"
+        key = f"packages/{package_id}/{storage_name}_v{version}.pdf"
         try:
             s3_upload(s3, bucket=cfg.s3_bucket, key=key, src=src, content_type="application/pdf")
         except Exception as e:
@@ -333,7 +334,7 @@ def process_job(cfg: Config, s3, job_id: str, package_id: str) -> None:
         files_for_backend.append(
             {
                 "doc_type": doc_type,
-                "version": 1,
+                "version": version,
                 "filename": pdf_name,
                 "storage_key": key,
                 "content_type": "application/pdf",
@@ -341,7 +342,7 @@ def process_job(cfg: Config, s3, job_id: str, package_id: str) -> None:
         )
 
     # Upload bundle
-    bundle_key = f"packages/{package_id}/bundle_v1.zip"
+    bundle_key = f"packages/{package_id}/bundle_v{version}.zip"
     try:
         s3_upload(s3, bucket=cfg.s3_bucket, key=bundle_key, src=zip_path, content_type="application/zip")
     except Exception as e:
@@ -349,8 +350,8 @@ def process_job(cfg: Config, s3, job_id: str, package_id: str) -> None:
     files_for_backend.append(
         {
             "doc_type": "bundle",
-            "version": 1,
-            "filename": "bundle.zip",
+            "version": version,
+            "filename": f"bundle_v{version}.zip",
             "storage_key": bundle_key,
             "content_type": "application/zip",
         }
