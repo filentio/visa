@@ -63,6 +63,7 @@ export function CreatePackage() {
   useEffect(() => {
     if (!jobId) return;
     let alive = true;
+    let intervalId: number | null = null;
 
     const tick = async () => {
       try {
@@ -74,6 +75,12 @@ export function CreatePackage() {
           if (!alive) return;
           setPkg(p);
         }
+        if (j.status === "done" || j.status === "error") {
+          if (intervalId != null) {
+            window.clearInterval(intervalId);
+            intervalId = null;
+          }
+        }
       } catch (e) {
         if (!alive) return;
         const msg = e instanceof ApiError ? e.message : "Failed to fetch job status";
@@ -82,13 +89,13 @@ export function CreatePackage() {
     };
 
     tick();
-    const id = window.setInterval(() => {
+    intervalId = window.setInterval(() => {
       tick();
     }, 2000);
 
     return () => {
       alive = false;
-      window.clearInterval(id);
+      if (intervalId != null) window.clearInterval(intervalId);
     };
   }, [jobId, packageId]);
 
