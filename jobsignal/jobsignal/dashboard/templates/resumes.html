@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Резюме — JobSignal</title>
+<style>
+  :root {
+    --bg: #131722; --bg2: #1a2235; --bg3: #1e2d45;
+    --accent: #4F46E5; --accent2: #6366f1;
+    --green: #22c55e; --red: #ef4444; --amber: #f59e0b; --gray: #64748b;
+    --text: #e2e8f0; --text2: #94a3b8; --border: #2a3a55;
+    --radius: 10px; --font: 'Inter', system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font);
+    font-size: 14px; min-height: 100vh; }
+  nav { background: var(--bg2); border-bottom: 1px solid var(--border);
+    padding: 14px 24px; display: flex; align-items: center; gap: 24px; }
+  nav .logo { font-weight: 700; font-size: 16px; color: var(--text); }
+  nav a { color: var(--text2); font-size: 14px; text-decoration: none; }
+  nav a.active { color: var(--accent2); }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 32px 16px; }
+  h2 { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
+  .subtitle { color: var(--text2); font-size: 13px; margin-bottom: 32px; }
+
+  /* profile cards */
+  .profiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 20px; }
+
+  .profile-card { background: var(--bg2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 24px; display: flex; flex-direction: column;
+    gap: 16px; transition: border-color .2s; }
+  .profile-card:hover { border-color: var(--accent); }
+
+  .profile-icon { font-size: 28px; }
+  .profile-name { font-weight: 700; font-size: 15px; }
+  .profile-desc { color: var(--text2); font-size: 12px; line-height: 1.5; }
+
+  /* drop zone */
+  .drop-zone { border: 2px dashed var(--border); border-radius: 8px;
+    padding: 20px 16px; text-align: center; cursor: pointer;
+    transition: border-color .2s, background .2s; position: relative; }
+  .drop-zone:hover, .drop-zone.drag-over {
+    border-color: var(--accent); background: #1e2650; }
+  .drop-zone input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .drop-zone .dz-icon { font-size: 24px; margin-bottom: 6px; }
+  .drop-zone .dz-text { font-size: 12px; color: var(--text2); }
+  .drop-zone .dz-text strong { color: var(--accent2); }
+
+  /* current file */
+  .current-file { display: flex; align-items: center; gap: 10px;
+    background: var(--bg3); border-radius: 8px; padding: 10px 14px; }
+  .current-file .cf-icon { font-size: 20px; }
+  .current-file .cf-name { font-size: 13px; flex: 1; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .current-file .cf-size { font-size: 11px; color: var(--text2); }
+  .current-file .cf-dl { font-size: 12px; color: var(--accent2); text-decoration: none; }
+  .current-file .cf-dl:hover { text-decoration: underline; }
+  .no-file { font-size: 12px; color: var(--gray); text-align: center;
+    padding: 8px 0; }
+
+  /* status */
+  .status { min-height: 20px; font-size: 13px; margin-top: 4px; }
+  .status.ok { color: var(--green); }
+  .status.err { color: var(--red); }
+  .status.loading { color: var(--text2); }
+
+  /* progress */
+  .progress-bar { height: 4px; background: var(--border); border-radius: 2px;
+    overflow: hidden; display: none; margin-top: 8px; }
+  .progress-bar.show { display: block; }
+  .progress-fill { height: 100%; background: var(--accent); width: 0%;
+    transition: width .3s; }
+
+  /* spinner */
+  .spinner { display: inline-block; width: 13px; height: 13px;
+    border: 2px solid var(--border); border-top-color: var(--accent2);
+    border-radius: 50%; animation: spin .7s linear infinite; vertical-align: middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .hint { background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px 20px; margin-top: 32px;
+    color: var(--text2); font-size: 13px; line-height: 1.6; }
+  .hint strong { color: var(--text); }
+</style>
+</head>
+<body>
+
+<nav>
+  <span class="logo">⚡ JobSignal</span>
+  <a href="/">Вакансии</a>
+  <a href="/channels">Каналы</a>
+  <a href="/resumes" class="active">Резюме</a>
+</nav>
+
+<div class="wrap">
+  <h2>Резюме по профилям</h2>
+  <p class="subtitle">
+    Загрузи PDF для каждого профиля. Дашборд автоматически предложит нужную версию
+    в зависимости от того, под какой профиль вакансия набрала лучший балл.
+  </p>
+
+  <div class="profiles" id="profiles-grid">
+    <!-- rendered by JS -->
+  </div>
+
+  <div class="hint">
+    <strong>Как это работает:</strong> при отклике на вакансию дашборд смотрит, 
+    у какого профиля лучший балл (AI PM / CPO / Senior PM), и предлагает скачать 
+    именно ту версию резюме. Обнови файл — при следующем отклике подтянется новая версия.
+  </div>
+</div>
+
+<script>
+const PROFILES = [
+  {
+    key: 'ai_pm',
+    name: 'Senior AI PM',
+    icon: '🤖',
+    desc: 'LLM-пайплайны, RAG-ассистенты, рекомендательные системы, AI-продукты'
+  },
+  {
+    key: 'cpo',
+    name: 'CPO / Head of Product',
+    icon: '🎯',
+    desc: 'Стратегия, портфель продуктов, команда 15+, P&L-ответственность'
+  },
+  {
+    key: 'pm',
+    name: 'Senior PM / PO',
+    icon: '⚙️',
+    desc: 'Discovery/delivery, A/B-тесты, метрики конверсии, финтех'
+  },
+];
+
+async function loadStatus() {
+  const r = await fetch('/api/resumes/status');
+  return await r.json();
+}
+
+async function render() {
+  let status = {};
+  try {
+    const d = await loadStatus();
+    status = d.resumes || {};
+  } catch(e) {}
+
+  const grid = document.getElementById('profiles-grid');
+  grid.innerHTML = '';
+
+  PROFILES.forEach(p => {
+    const info = status[p.key] || {};
+    const hasFile = info.exists;
+
+    const card = document.createElement('div');
+    card.className = 'profile-card';
+    card.innerHTML = `
+      <div>
+        <div class="profile-icon">${p.icon}</div>
+      </div>
+      <div>
+        <div class="profile-name">${p.name}</div>
+        <div class="profile-desc">${p.desc}</div>
+      </div>
+
+      ${hasFile ? `
+        <div class="current-file">
+          <span class="cf-icon">📄</span>
+          <span class="cf-name">${info.filename || p.key + '.pdf'}</span>
+          <a class="cf-dl" href="/api/resumes/download/${p.key}" download>↓</a>
+        </div>
+        <div style="font-size:11px;color:var(--gray);margin-top:-8px">
+          Обновлено: ${info.updated || '—'} · ${info.size_kb || '?'} КБ
+        </div>
+      ` : `
+        <div class="no-file">Файл не загружен</div>
+      `}
+
+      <div class="drop-zone" id="dz-${p.key}"
+           ondragover="handleDragOver(event,'${p.key}')"
+           ondragleave="handleDragLeave('${p.key}')"
+           ondrop="handleDrop(event,'${p.key}')">
+        <input type="file" accept=".pdf" onchange="handleFile(event,'${p.key}')">
+        <div class="dz-icon">${hasFile ? '🔄' : '⬆️'}</div>
+        <div class="dz-text">
+          <strong>${hasFile ? 'Заменить PDF' : 'Загрузить PDF'}</strong><br>
+          перетащи или нажми
+        </div>
+      </div>
+
+      <div class="progress-bar" id="pb-${p.key}">
+        <div class="progress-fill" id="pf-${p.key}"></div>
+      </div>
+      <div class="status" id="st-${p.key}"></div>
+    `;
+    grid.appendChild(card);
+  });
+}
+
+function handleDragOver(e, key) {
+  e.preventDefault();
+  document.getElementById(`dz-${key}`).classList.add('drag-over');
+}
+function handleDragLeave(key) {
+  document.getElementById(`dz-${key}`).classList.remove('drag-over');
+}
+function handleDrop(e, key) {
+  e.preventDefault();
+  document.getElementById(`dz-${key}`).classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file) uploadFile(file, key);
+}
+function handleFile(e, key) {
+  const file = e.target.files[0];
+  if (file) uploadFile(file, key);
+}
+
+async function uploadFile(file, key) {
+  const st = document.getElementById(`st-${key}`);
+  const pb = document.getElementById(`pb-${key}`);
+  const pf = document.getElementById(`pf-${key}`);
+
+  if (!file.name.toLowerCase().endsWith('.pdf')) {
+    st.textContent = '✗ Только PDF файлы';
+    st.className = 'status err';
+    return;
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    st.textContent = '✗ Файл слишком большой (макс 10 МБ)';
+    st.className = 'status err';
+    return;
+  }
+
+  st.innerHTML = '<span class="spinner"></span> Загружаю…';
+  st.className = 'status loading';
+  pb.classList.add('show');
+  pf.style.width = '30%';
+
+  const form = new FormData();
+  form.append('file', file);
+  form.append('profile_key', key);
+
+  try {
+    pf.style.width = '70%';
+    const r = await fetch('/api/resumes/upload', { method: 'POST', body: form });
+    pf.style.width = '100%';
+    const d = await r.json();
+    if (d.ok) {
+      st.textContent = `✓ Загружено (${d.size_kb} КБ)`;
+      st.className = 'status ok';
+      setTimeout(() => render(), 1200);
+    } else {
+      st.textContent = `✗ ${d.error}`;
+      st.className = 'status err';
+    }
+  } catch(e) {
+    st.textContent = '✗ Ошибка сети';
+    st.className = 'status err';
+  }
+  setTimeout(() => { pb.classList.remove('show'); pf.style.width = '0%'; }, 1500);
+}
+
+render();
+</script>
+</body>
+</html>

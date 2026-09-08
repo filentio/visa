@@ -1,0 +1,23 @@
+# Секреты и сессии — никогда не коммитим
+.env
+config/.env
+state.json
+*.pem
+*.key
+
+# Данные
+data/
+*.sqlite3
+*.db
+letters/
+screenshots/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# ОС
+.DS_Store

@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Каналы — JobSignal</title>
+<style>
+  :root {
+    --bg: #131722; --bg2: #1a2235; --bg3: #1e2d45;
+    --accent: #4F46E5; --accent2: #6366f1;
+    --green: #22c55e; --red: #ef4444; --amber: #f59e0b; --gray: #64748b;
+    --text: #e2e8f0; --text2: #94a3b8; --border: #2a3a55;
+    --radius: 10px; --font: 'Inter', system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font);
+    font-size: 14px; min-height: 100vh; }
+  a { color: var(--accent2); text-decoration: none; }
+  nav { background: var(--bg2); border-bottom: 1px solid var(--border);
+    padding: 14px 24px; display: flex; align-items: center; gap: 24px; }
+  nav .logo { font-weight: 700; font-size: 16px; color: var(--text); }
+  nav a { color: var(--text2); font-size: 14px; }
+  nav a.active { color: var(--accent2); }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
+  h2 { font-size: 20px; font-weight: 700; margin-bottom: 20px; }
+  h3 { font-size: 16px; font-weight: 600; margin-bottom: 12px; color: var(--text2); }
+
+  /* tabs */
+  .tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+  .tab-btn { padding: 8px 18px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--bg2); color: var(--text2); cursor: pointer; font-size: 13px; }
+  .tab-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+  /* add form */
+  .add-form { background: var(--bg2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 20px; margin-bottom: 24px; }
+  .form-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  .form-group { display: flex; flex-direction: column; gap: 6px; }
+  .form-group label { font-size: 12px; color: var(--text2); }
+  input, select { background: var(--bg3); border: 1px solid var(--border);
+    color: var(--text); border-radius: 8px; padding: 8px 12px; font-size: 13px;
+    outline: none; min-width: 160px; }
+  input:focus, select:focus { border-color: var(--accent); }
+  .btn { padding: 8px 18px; border-radius: 8px; font-size: 13px; font-weight: 600;
+    cursor: pointer; border: none; white-space: nowrap; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: var(--accent2); }
+  .btn-sm { padding: 5px 12px; font-size: 12px; }
+  .btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--text2); }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent2); }
+  .btn-danger { background: transparent; border: 1px solid var(--red); color: var(--red); }
+  .btn-danger:hover { background: var(--red); color: #fff; }
+  .btn-green { background: var(--green); color: #fff; }
+  .btn-green:hover { opacity: .85; }
+  .msg { margin-top: 10px; font-size: 13px; min-height: 20px; }
+  .msg.ok { color: var(--green); }
+  .msg.err { color: var(--red); }
+
+  /* search section */
+  .search-section { background: var(--bg2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 20px; margin-bottom: 24px; }
+  .tag-list { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+  .tag { background: var(--bg3); border: 1px solid var(--border);
+    border-radius: 20px; padding: 4px 12px; font-size: 12px; color: var(--text2);
+    cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px; }
+  .tag.selected { border-color: var(--accent); color: var(--accent2); background: #1e2650; }
+  .tag .rm { color: var(--gray); font-size: 14px; }
+  .custom-query { display: flex; gap: 8px; margin-top: 8px; }
+  .custom-query input { flex: 1; }
+  .search-result { margin-top: 12px; font-size: 13px; color: var(--text2); }
+
+  /* table */
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; padding: 10px 12px; font-size: 12px; color: var(--text2);
+    border-bottom: 1px solid var(--border); font-weight: 600; text-transform: uppercase;
+    letter-spacing: .5px; }
+  td { padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px;
+    vertical-align: middle; }
+  tr:hover td { background: var(--bg2); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px;
+    font-size: 11px; font-weight: 600; }
+  .badge-active { background: #14532d; color: var(--green); }
+  .badge-off { background: #3b1f1f; color: var(--red); }
+  .badge-manual { background: #1e2d45; color: var(--text2); }
+  .badge-tgstat { background: #1e3050; color: #60a5fa; }
+  .badge-telemetr { background: #2d1e40; color: #c084fc; }
+  .source-tag { font-size: 11px; color: var(--text2); }
+  .actions { display: flex; gap: 6px; }
+  .empty { padding: 40px; text-align: center; color: var(--text2); }
+
+  /* spinner */
+  .spinner { display: inline-block; width: 16px; height: 16px;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin .7s linear infinite; vertical-align: middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* sections */
+  .section { margin-bottom: 32px; }
+</style>
+</head>
+<body>
+
+<nav>
+  <span class="logo">⚡ JobSignal</span>
+  <a href="/">Вакансии</a>
+  <a href="/channels" class="active">Каналы</a>
+  <a href="/resumes">Резюме</a>
+</nav>
+
+<div class="wrap">
+  <h2>Управление каналами</h2>
+
+  <!-- tabs -->
+  <div class="tabs">
+    <button class="tab-btn active" onclick="showTab('active')">Активные каналы</button>
+    <button class="tab-btn" onclick="showTab('add')">Добавить вручную</button>
+    <button class="tab-btn" onclick="showTab('search')">Поиск каналов</button>
+    <button class="tab-btn" id="tab-cand-btn" onclick="showTab('candidates')">
+      Кандидаты <span id="cand-count" style="color:var(--amber)"></span>
+    </button>
+  </div>
+
+  <!-- active channels tab -->
+  <div id="tab-active">
+    <div class="section">
+      <div id="channels-loading" style="text-align:center;padding:30px">
+        <span class="spinner"></span> Загрузка…
+      </div>
+      <div id="channels-table" style="display:none" class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Канал</th><th>Ниша</th><th>Источник</th>
+              <th>Подписчики</th><th>Постов/30д</th>
+              <th>Добавлен</th><th>Статус</th><th>Действия</th>
+            </tr>
+          </thead>
+          <tbody id="channels-tbody"></tbody>
+        </table>
+        <div id="channels-empty" class="empty" style="display:none">
+          Каналов ещё нет — добавь вручную или через поиск.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- add manual tab -->
+  <div id="tab-add" style="display:none">
+    <div class="add-form">
+      <h3>Добавить канал вручную</h3>
+      <div class="form-row">
+        <div class="form-group">
+          <label>@handle канала *</label>
+          <input id="m-handle" placeholder="jobs_product_managers" />
+        </div>
+        <div class="form-group">
+          <label>Название (необязательно)</label>
+          <input id="m-title" placeholder="PM вакансии" />
+        </div>
+        <div class="form-group">
+          <label>Ниша</label>
+          <select id="m-niche">
+            <option value="product">product</option>
+            <option value="fintech">fintech</option>
+            <option value="ai">ai</option>
+            <option value="it">it</option>
+            <option value="executive">executive</option>
+          </select>
+        </div>
+        <div class="form-group" style="justify-content:flex-end">
+          <button class="btn btn-primary" onclick="addManual()">
+            Проверить и добавить
+          </button>
+        </div>
+      </div>
+      <div class="msg" id="manual-msg"></div>
+      <p style="margin-top:12px;color:var(--text2);font-size:12px">
+        Перед добавлением сервис проверит, что канал публичный и живой (посты за 30 дней).
+      </p>
+    </div>
+  </div>
+
+  <!-- search tab -->
+  <div id="tab-search" style="display:none">
+    <div class="search-section">
+      <h3>Поиск каналов по ключевым словам</h3>
+      <p style="color:var(--text2);font-size:13px;margin-bottom:12px">
+        Ищем через tgstat.ru и telemetr.me, проверяем активность, кладём кандидатов на ревью.
+      </p>
+
+      <div class="tag-list" id="query-tags">
+        <!-- populated by JS -->
+      </div>
+
+      <div class="custom-query">
+        <input id="custom-q" placeholder="Свой запрос (Enter для добавления)" />
+        <button class="btn btn-ghost btn-sm" onclick="addCustomQuery()">+ Добавить</button>
+      </div>
+
+      <div style="margin-top:16px;display:flex;gap:10px;align-items:center">
+        <button class="btn btn-primary" id="search-btn" onclick="runSearch()">
+          🔍 Запустить поиск
+        </button>
+        <span id="search-status" style="color:var(--text2);font-size:13px"></span>
+      </div>
+      <div class="search-result" id="search-result"></div>
+    </div>
+  </div>
+
+  <!-- candidates tab -->
+  <div id="tab-candidates" style="display:none">
+    <div class="section">
+      <p style="color:var(--text2);font-size:13px;margin-bottom:16px">
+        Каналы найдены автоматически и ждут твоего решения. Добавь хорошие, отклони остальные.
+      </p>
+      <div id="cand-loading" style="text-align:center;padding:30px">
+        <span class="spinner"></span>
+      </div>
+      <div id="cand-table" style="display:none" class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Канал</th><th>Подписчики</th><th>Источник</th>
+              <th>Запрос</th><th>Найден</th><th>Действия</th>
+            </tr>
+          </thead>
+          <tbody id="cand-tbody"></tbody>
+        </table>
+        <div id="cand-empty" class="empty" style="display:none">
+          Кандидатов нет — запусти поиск на вкладке «Поиск каналов».
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /wrap -->
+
+<script>
+const DEFAULT_QUERIES = [
+  "product manager вакансии",
+  "CPO вакансии",
+  "AI product manager",
+  "fintech вакансии продукт",
+  "IT вакансии продакт",
+  "head of product вакансии",
+  "product owner jobs",
+];
+let selectedQueries = new Set(DEFAULT_QUERIES);
+
+function showTab(name) {
+  ['active','add','search','candidates'].forEach(t => {
+    document.getElementById(`tab-${t}`).style.display = t === name ? '' : 'none';
+  });
+  document.querySelectorAll('.tab-btn').forEach((btn, i) => {
+    btn.classList.toggle('active', ['active','add','search','candidates'][i] === name);
+  });
+  if (name === 'active') loadChannels();
+  if (name === 'candidates') loadCandidates();
+  if (name === 'search') renderQueryTags();
+}
+
+// ── channels ─────────────────────────────────────────────────────────────────
+async function loadChannels() {
+  document.getElementById('channels-loading').style.display = '';
+  document.getElementById('channels-table').style.display = 'none';
+  const r = await fetch('/api/channels');
+  const d = await r.json();
+  const tbody = document.getElementById('channels-tbody');
+  tbody.innerHTML = '';
+  if (!d.channels.length) {
+    document.getElementById('channels-empty').style.display = '';
+  } else {
+    document.getElementById('channels-empty').style.display = 'none';
+    d.channels.forEach(c => {
+      const tr = document.createElement('tr');
+      tr.id = `ch-${c.id}`;
+      const srcBadge = {manual:'badge-manual',tgstat:'badge-tgstat',telemetr:'badge-telemetr'}[c.source]||'badge-manual';
+      tr.innerHTML = `
+        <td><a href="https://t.me/${c.handle}" target="_blank">@${c.handle}</a>
+          <div style="color:var(--text2);font-size:11px">${c.title}</div></td>
+        <td>${c.niche}</td>
+        <td><span class="badge ${srcBadge}">${c.source}</span></td>
+        <td>${c.subscriber_count ? c.subscriber_count.toLocaleString('ru') : '—'}</td>
+        <td>${c.post_count_30d || '—'}</td>
+        <td>${c.added_at}</td>
+        <td><span class="badge ${c.active ? 'badge-active' : 'badge-off'}">${c.active ? 'Активен' : 'Выкл'}</span></td>
+        <td class="actions">
+          <button class="btn btn-sm btn-ghost" onclick="toggleChannel(${c.id}, this)">
+            ${c.active ? 'Выключить' : 'Включить'}
+          </button>
+          <button class="btn btn-sm btn-danger" onclick="deleteChannel(${c.id})">✕</button>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+  document.getElementById('channels-loading').style.display = 'none';
+  document.getElementById('channels-table').style.display = '';
+}
+
+async function toggleChannel(id, btn) {
+  btn.disabled = true;
+  const r = await fetch(`/api/channels/toggle/${id}`, {method:'POST'});
+  const d = await r.json();
+  loadChannels();
+}
+
+async function deleteChannel(id) {
+  if (!confirm('Удалить канал? Собранные посты останутся в базе.')) return;
+  await fetch(`/api/channels/delete/${id}`, {method:'DELETE'});
+  loadChannels();
+}
+
+// ── manual add ────────────────────────────────────────────────────────────────
+async function addManual() {
+  const handle = document.getElementById('m-handle').value.trim().replace('@','');
+  const title = document.getElementById('m-title').value.trim();
+  const niche = document.getElementById('m-niche').value;
+  const msg = document.getElementById('manual-msg');
+  if (!handle) { msg.textContent = 'Введи handle канала'; msg.className = 'msg err'; return; }
+  msg.innerHTML = '<span class="spinner"></span> Проверяем канал…';
+  msg.className = 'msg';
+  const r = await fetch('/api/channels/add_manual', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({handle, title, niche})
+  });
+  const d = await r.json();
+  if (d.ok) {
+    msg.textContent = `✓ @${d.handle} добавлен (${d.post_count_30d} постов за 30 дней)`;
+    msg.className = 'msg ok';
+    document.getElementById('m-handle').value = '';
+    document.getElementById('m-title').value = '';
+  } else {
+    msg.textContent = `✗ ${d.error}`;
+    msg.className = 'msg err';
+  }
+}
+
+// allow Enter in handle field
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('m-handle').addEventListener('keydown', e => {
+    if (e.key === 'Enter') addManual();
+  });
+  document.getElementById('custom-q').addEventListener('keydown', e => {
+    if (e.key === 'Enter') addCustomQuery();
+  });
+  loadChannels();
+  loadCandidateCount();
+});
+
+// ── search ────────────────────────────────────────────────────────────────────
+function renderQueryTags() {
+  const el = document.getElementById('query-tags');
+  el.innerHTML = '';
+  DEFAULT_QUERIES.forEach(q => {
+    const tag = document.createElement('div');
+    tag.className = 'tag' + (selectedQueries.has(q) ? ' selected' : '');
+    tag.textContent = q;
+    tag.onclick = () => {
+      if (selectedQueries.has(q)) selectedQueries.delete(q);
+      else selectedQueries.add(q);
+      renderQueryTags();
+    };
+    el.appendChild(tag);
+  });
+  // custom queries
+  selectedQueries.forEach(q => {
+    if (DEFAULT_QUERIES.includes(q)) return;
+    const tag = document.createElement('div');
+    tag.className = 'tag selected';
+    tag.innerHTML = `${q} <span class="rm" onclick="removeCustomQ('${q}')">✕</span>`;
+    el.appendChild(tag);
+  });
+}
+
+function addCustomQuery() {
+  const inp = document.getElementById('custom-q');
+  const q = inp.value.trim();
+  if (!q) return;
+  selectedQueries.add(q);
+  inp.value = '';
+  renderQueryTags();
+}
+
+function removeCustomQ(q) {
+  selectedQueries.delete(q);
+  renderQueryTags();
+}
+
+async function runSearch() {
+  const queries = [...selectedQueries];
+  if (!queries.length) { alert('Выбери хотя бы один запрос'); return; }
+  const btn = document.getElementById('search-btn');
+  const status = document.getElementById('search-status');
+  const result = document.getElementById('search-result');
+  btn.disabled = true;
+  status.innerHTML = '<span class="spinner"></span> Ищем через tgstat и telemetr…';
+  result.textContent = '';
+  try {
+    const r = await fetch('/api/search_channels', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({queries})
+    });
+    const d = await r.json();
+    if (d.error) {
+      status.textContent = '✗ ' + d.error;
+    } else {
+      status.textContent = '';
+      result.textContent =
+        `Найдено новых кандидатов: ${d.new_candidates}. ` +
+        `Пропущено (уже есть): ${d.skipped_existing}. ` +
+        `Смотри вкладку «Кандидаты».`;
+      loadCandidateCount();
+    }
+  } catch(e) {
+    status.textContent = '✗ Ошибка сети: ' + e.message;
+  }
+  btn.disabled = false;
+}
+
+// ── candidates ────────────────────────────────────────────────────────────────
+async function loadCandidateCount() {
+  const r = await fetch('/api/candidates');
+  const d = await r.json();
+  const n = d.candidates.length;
+  document.getElementById('cand-count').textContent = n ? `(${n})` : '';
+}
+
+async function loadCandidates() {
+  document.getElementById('cand-loading').style.display = '';
+  document.getElementById('cand-table').style.display = 'none';
+  const r = await fetch('/api/candidates');
+  const d = await r.json();
+  const tbody = document.getElementById('cand-tbody');
+  tbody.innerHTML = '';
+  if (!d.candidates.length) {
+    document.getElementById('cand-empty').style.display = '';
+  } else {
+    document.getElementById('cand-empty').style.display = 'none';
+    d.candidates.forEach(c => {
+      const tr = document.createElement('tr');
+      tr.id = `cand-${c.id}`;
+      const srcBadge = {tgstat:'badge-tgstat',telemetr:'badge-telemetr'}[c.source]||'badge-manual';
+      tr.innerHTML = `
+        <td>
+          <a href="https://t.me/${c.handle}" target="_blank">@${c.handle}</a>
+          <div style="color:var(--text2);font-size:11px">${c.title}</div>
+          <div style="color:var(--gray);font-size:11px;max-width:240px">${c.description}</div>
+        </td>
+        <td>${c.subscriber_count ? c.subscriber_count.toLocaleString('ru') : '—'}</td>
+        <td><span class="badge ${srcBadge}">${c.source}</span></td>
+        <td style="color:var(--text2);font-size:12px">${c.search_query}</td>
+        <td>${c.found_at}</td>
+        <td class="actions">
+          <button class="btn btn-sm btn-green" onclick="addCandidate(${c.id})">+ Добавить</button>
+          <button class="btn btn-sm btn-danger" onclick="rejectCandidate(${c.id})">Отклонить</button>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }
+  document.getElementById('cand-loading').style.display = 'none';
+  document.getElementById('cand-table').style.display = '';
+  loadCandidateCount();
+}
+
+async function addCandidate(id) {
+  const r = await fetch(`/api/candidates/add/${id}`, {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({niche: 'product'})
+  });
+  const d = await r.json();
+  if (d.ok) document.getElementById(`cand-${id}`)?.remove();
+  loadCandidateCount();
+}
+
+async function rejectCandidate(id) {
+  await fetch(`/api/candidates/reject/${id}`, {method:'POST'});
+  document.getElementById(`cand-${id}`)?.remove();
+  loadCandidateCount();
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JobSignal</title>
+<style>
+:root{
+  --bg:#131722;--bg2:#1a2235;--bg3:#1e2d45;
+  --accent:#4F46E5;--accent2:#6366f1;
+  --green:#22c55e;--red:#ef4444;--amber:#f59e0b;--gray:#64748b;
+  --text:#e2e8f0;--text2:#94a3b8;--border:#2a3a55;
+  --radius:10px;--font:'Inter',system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;min-height:100vh;}
+a{color:var(--accent2);text-decoration:none;}
+
+nav{background:var(--bg2);border-bottom:1px solid var(--border);
+  padding:12px 20px;display:flex;align-items:center;gap:16px;}
+nav .logo{font-weight:700;font-size:15px;}
+nav a{color:var(--text2);font-size:13px;}
+nav a.active{color:var(--accent2);}
+.spacer{flex:1;}
+.btn-refresh{padding:6px 14px;border-radius:8px;font-size:12px;font-weight:600;
+  cursor:pointer;border:none;background:var(--accent);color:#fff;display:flex;align-items:center;gap:5px;}
+.btn-refresh:hover{background:var(--accent2);}
+.btn-refresh:disabled{opacity:.5;cursor:default;}
+#refresh-status{font-size:11px;color:var(--text2);}
+
+/* notification bar */
+#notif-bar{display:none;background:#1e3050;border-bottom:1px solid #2a4a70;
+  padding:8px 20px;font-size:13px;color:#60a5fa;cursor:pointer;}
+#notif-bar:hover{background:#1a2a40;}
+
+/* stats */
+.stats{display:flex;gap:10px;padding:12px 20px;flex-wrap:wrap;align-items:center;}
+.stat{background:var(--bg2);border:1px solid var(--border);border-radius:8px;
+  padding:10px 16px;min-width:90px;}
+.stat-val{font-size:20px;font-weight:700;}
+.stat-lbl{font-size:11px;color:var(--text2);}
+.rate{display:flex;align-items:center;gap:12px;margin-left:auto;
+  background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:8px 14px;}
+.rate-item{font-size:12px;text-align:center;}
+.rate-lbl{font-size:10px;color:var(--text2);}
+
+/* filters */
+.filters{padding:10px 20px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;
+  border-bottom:1px solid var(--border);background:var(--bg2);position:sticky;top:0;z-index:10;}
+select,input[type=text]{background:var(--bg3);border:1px solid var(--border);color:var(--text);
+  border-radius:8px;padding:6px 10px;font-size:12px;outline:none;}
+select:focus,input:focus{border-color:var(--accent);}
+input[type=range]{width:70px;accent-color:var(--accent);}
+.tval{font-size:11px;color:var(--text2);min-width:20px;}
+.fbtn{padding:6px 12px;border-radius:8px;font-size:12px;cursor:pointer;
+  border:1px solid var(--border);background:transparent;color:var(--text2);}
+.fbtn.active{background:var(--accent);color:#fff;border-color:var(--accent);}
+
+/* cards */
+.cards{padding:12px 20px;display:flex;flex-direction:column;gap:8px;}
+
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;transition:border-color .15s;}
+.card:hover{border-color:#3a4a65;}
+.card.new-vacancy{border-left:3px solid var(--accent2);}
+
+/* card header - always visible, clickable */
+.card-head{padding:14px 16px;cursor:pointer;display:flex;align-items:center;gap:12px;}
+.card-head:hover{background:rgba(255,255,255,.02);}
+.card-main{flex:1;min-width:0;}
+.card-title{font-weight:600;font-size:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.card-sub{font-size:12px;color:var(--text2);margin-top:3px;display:flex;gap:10px;flex-wrap:wrap;}
+.card-scores{display:flex;gap:6px;align-items:center;flex-shrink:0;}
+.score-pill{font-size:11px;font-weight:700;padding:2px 7px;border-radius:10px;font-family:monospace;}
+.card-chevron{color:var(--gray);font-size:12px;flex-shrink:0;transition:transform .2s;}
+.card.expanded .card-chevron{transform:rotate(180deg);}
+
+/* card body - hidden by default */
+.card-body{display:none;padding:0 16px 14px;border-top:1px solid var(--border);}
+.card.expanded .card-body{display:block;}
+
+.desc{font-size:12px;color:var(--text2);line-height:1.6;margin:12px 0;padding:10px 12px;
+  background:var(--bg3);border-radius:8px;}
+
+/* score bars */
+.scores{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;}
+.score-item{min-width:130px;}
+.score-profile{font-size:10px;color:var(--text2);margin-bottom:3px;}
+.score-bar-wrap{display:flex;align-items:center;gap:6px;}
+.score-bar{height:5px;border-radius:3px;flex:1;background:var(--bg3);overflow:hidden;}
+.score-fill{height:100%;border-radius:3px;}
+.score-val{font-size:11px;font-weight:700;min-width:24px;font-family:monospace;}
+.score-reason{font-size:11px;color:var(--text2);margin-top:3px;line-height:1.4;}
+.score-best{background:var(--bg3);border-radius:6px;padding:4px 8px;border:1px solid #2a3a65;}
+
+/* action panel */
+.action-panel{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;}
+.btn{padding:6px 14px;border-radius:8px;font-size:12px;font-weight:600;
+  cursor:pointer;border:none;white-space:nowrap;}
+.btn-primary{background:var(--accent);color:#fff;}
+.btn-primary:hover{background:var(--accent2);}
+.btn-ghost{background:transparent;border:1px solid var(--border);color:var(--text2);}
+.btn-ghost:hover{border-color:var(--accent);color:var(--accent2);}
+.btn-danger{background:transparent;border:1px solid var(--border);color:var(--gray);}
+.btn-danger:hover{border-color:var(--red);color:var(--red);}
+.btn:disabled{opacity:.4;cursor:default;}
+
+/* outreach panel */
+.outreach{background:var(--bg3);border-radius:8px;padding:12px;margin-top:10px;display:none;}
+.outreach.show{display:block;}
+.outreach-title{font-size:12px;font-weight:600;margin-bottom:8px;color:var(--text2);}
+.draft-controls{display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap;}
+.style-sel{background:var(--bg2);border:1px solid var(--border);color:var(--text);
+  border-radius:6px;padding:4px 8px;font-size:11px;outline:none;}
+textarea.draft{width:100%;background:var(--bg2);border:1px solid var(--border);
+  color:var(--text);border-radius:8px;padding:8px 10px;font-size:12px;
+  resize:vertical;min-height:90px;outline:none;font-family:var(--font);}
+textarea.draft:focus{border-color:var(--accent);}
+.instructions{font-size:11px;color:var(--text2);margin-top:8px;line-height:1.5;
+  padding:8px;background:var(--bg2);border-radius:6px;}
+.outreach-actions{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;}
+
+/* badges */
+.badge{font-size:10px;padding:2px 7px;border-radius:10px;font-weight:600;flex-shrink:0;}
+.b-new{background:#1e2650;color:var(--accent2);}
+.b-tg{background:#14532d;color:var(--green);}
+.b-hh{background:#1e3050;color:#60a5fa;}
+.b-form{background:#2d2d1e;color:var(--amber);}
+.b-linkedin{background:#1e2d45;color:#a78bfa;}
+.b-unknown{background:#2a2a2a;color:var(--gray);}
+
+/* empty / spinner */
+.empty{padding:50px;text-align:center;color:var(--text2);}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border);
+  border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;}
+@keyframes spin{to{transform:rotate(360deg);}}
+
+/* contact type colors */
+</style>
+</head>
+<body>
+
+<nav>
+  <span class="logo">⚡ JobSignal</span>
+  <a href="/" class="active">Вакансии</a>
+  <a href="/channels">Каналы</a>
+  <a href="/resumes">Резюме</a>
+  <a href="/recruiters">Рекрутёры</a>
+  <a href="/analytics">Аналитика</a>
+  <div class="spacer"></div>
+  <span id="refresh-status"></span>
+  <button class="btn-refresh" id="refresh-btn" onclick="runPipeline()">🔄 Обновить</button>
+</nav>
+
+<div id="notif-bar" onclick="goToChannels()">
+  📢 <span id="notif-text"></span> — перейти к каналам →
+</div>
+
+<div class="stats">
+  <div class="stat"><div class="stat-val" id="s-total">—</div><div class="stat-lbl">Оценено</div></div>
+  <div class="stat"><div class="stat-val" id="s-working">—</div><div class="stat-lbl">В работе</div></div>
+  <div class="stat"><div class="stat-val" id="s-applied">—</div><div class="stat-lbl">Откликов</div></div>
+  <div class="stat"><div class="stat-val" id="s-replied">—</div><div class="stat-lbl">Ответов</div></div>
+  <div class="rate">
+    <div class="rate-item"><div class="rate-lbl">За час</div><div id="r-hour">—</div></div>
+    <div class="rate-item"><div class="rate-lbl">За сутки</div><div id="r-day">—</div></div>
+    <div class="rate-item"><div class="rate-lbl">Можно</div><div id="r-allowed" style="font-weight:700">—</div></div>
+  </div>
+</div>
+
+<div class="filters">
+  <select id="f-profile" onchange="loadVacancies()">
+    <option value="">Все профили</option>
+    {% for k,v in profiles.items() %}
+    <option value="{{ k }}">{{ v }}</option>
+    {% endfor %}
+  </select>
+  <select id="f-channel" onchange="loadVacancies()"><option value="">Все каналы</option></select>
+  <select id="f-days" onchange="loadVacancies()">
+    <option value="">Любая дата</option>
+    <option value="7">7 дней</option>
+    <option value="30">30 дней</option>
+  </select>
+  <select id="f-status" onchange="loadVacancies()">
+    <option value="">Все</option>
+    <option value="working">В работе</option>
+    <option value="applied">Откликнулся</option>
+    <option value="replied">Ответили</option>
+  </select>
+  <select id="f-contact" onchange="loadVacancies()">
+    <option value="">Любой контакт</option>
+    <option value="tg">Telegram</option>
+    <option value="hh">hh.ru</option>
+    <option value="form">Форма</option>
+    <option value="linkedin">LinkedIn</option>
+  </select>
+  <span style="font-size:11px;color:var(--text2)">Порог</span>
+  <input type="range" id="f-threshold" min="0" max="100" value="70"
+    oninput="document.getElementById('f-tval').textContent=this.value" onchange="loadVacancies()">
+  <span class="tval" id="f-tval">70</span>
+  <button class="fbtn active" id="btn-queue" onclick="toggleQueue()">Очередь</button>
+  <input type="text" id="f-search" placeholder="Поиск…" oninput="debounceLoad()" style="min-width:140px">
+</div>
+
+<div class="cards" id="cards-wrap">
+  <div class="empty"><span class="spinner"></span> Загрузка…</div>
+</div>
+
+<script>
+const STYLES = {{ styles|tojson }};
+const STYLE_LABELS = {
+  metric_hook: 'Метрика',
+  match_request: 'Под запрос',
+  hands_on: 'Хендз-он',
+  fintech: 'Финтех'
+};
+let queueMode = true;
+let _deb = null;
+let _newCandidates = 0;
+
+function debounceLoad(){clearTimeout(_deb);_deb=setTimeout(loadVacancies,400);}
+function toggleQueue(){queueMode=!queueMode;document.getElementById('btn-queue').classList.toggle('active',queueMode);loadVacancies();}
+function goToChannels(){window.location.href='/channels';}
+
+function scoreColor(s){
+  if(s>=80)return'var(--green)';
+  if(s>=70)return'#84cc16';
+  if(s>=50)return'var(--amber)';
+  return'var(--gray)';
+}
+
+function ctBadge(ct){
+  const cls={tg:'b-tg',hh:'b-hh',form:'b-form',linkedin:'b-linkedin',unknown:'b-unknown'};
+  const lbl={tg:'TG',hh:'hh.ru',form:'Форма',linkedin:'LinkedIn',unknown:'?'};
+  return `<span class="badge ${cls[ct]||'b-unknown'}">${lbl[ct]||ct}</span>`;
+}
+
+// ── stats ─────────────────────────────────────────────────────────────────────
+async function loadStats(){
+  try{
+    const d=await(await fetch('/api/stats')).json();
+    document.getElementById('s-total').textContent=d.total??'—';
+    document.getElementById('s-working').textContent=d.working??'—';
+    document.getElementById('s-applied').textContent=d.applied??'—';
+    document.getElementById('s-replied').textContent=d.replied??'—';
+    document.getElementById('r-hour').textContent=`${d.sent_hour}/${d.per_hour}`;
+    document.getElementById('r-day').textContent=`${d.sent_day}/${d.per_day}`;
+    const a=d.allowed_now??0;
+    const el=document.getElementById('r-allowed');
+    el.textContent=a>0?a:(d.next_slot?`~${d.next_slot}`:'0');
+    el.style.color=a>0?'var(--green)':'var(--amber)';
+    // check new candidates
+    if(d.new_candidates>0&&d.new_candidates!==_newCandidates){
+      _newCandidates=d.new_candidates;
+      const bar=document.getElementById('notif-bar');
+      document.getElementById('notif-text').textContent=
+        `Найдено ${d.new_candidates} новых каналов с вакансиями`;
+      bar.style.display='block';
+    }
+  }catch(e){}
+}
+
+// ── pipeline ──────────────────────────────────────────────────────────────────
+async function runPipeline(){
+  const btn=document.getElementById('refresh-btn');
+  const st=document.getElementById('refresh-status');
+  btn.disabled=true;
+  btn.innerHTML='<span class="spinner"></span>';
+  st.textContent='Запускаю…';
+  try{
+    const r=await fetch('/api/pipeline/run',{method:'POST'});
+    const d=await r.json();
+    st.textContent=d.message||'✓ Запущен (~5 мин)';
+    setTimeout(()=>{loadVacancies();loadStats();st.textContent='';},300000);
+  }catch(e){st.textContent='✗ Ошибка';}
+  setTimeout(()=>{btn.disabled=false;btn.innerHTML='🔄 Обновить';},15000);
+}
+
+// ── vacancies ─────────────────────────────────────────────────────────────────
+async function loadVacancies(){
+  const p=new URLSearchParams({
+    profile:document.getElementById('f-profile').value,
+    threshold:document.getElementById('f-threshold').value,
+    channel_id:document.getElementById('f-channel').value,
+    days:document.getElementById('f-days').value,
+    status:document.getElementById('f-status').value,
+    contact_type:document.getElementById('f-contact').value,
+    search:document.getElementById('f-search').value,
+    queue:queueMode?'1':'0',
+  });
+  const wrap=document.getElementById('cards-wrap');
+  wrap.innerHTML='<div class="empty"><span class="spinner"></span></div>';
+  try{
+    const d=await(await fetch('/api/vacancies?'+p)).json();
+    const sel=document.getElementById('f-channel');
+    const cur=sel.value;
+    sel.innerHTML='<option value="">Все каналы</option>'+
+      d.channels.map(c=>`<option value="${c.id}"${c.id==cur?' selected':''}>${c.title}</option>`).join('');
+    if(!d.vacancies.length){
+      wrap.innerHTML='<div class="empty">Нет вакансий — попробуй снизить порог или сбросить фильтры.</div>';
+      return;
+    }
+    wrap.innerHTML='';
+    d.vacancies.forEach(v=>wrap.appendChild(buildCard(v)));
+  }catch(e){wrap.innerHTML='<div class="empty">Ошибка загрузки</div>';}
+}
+
+// ── card ──────────────────────────────────────────────────────────────────────
+function buildCard(v){
+  const div=document.createElement('div');
+  div.className='card'+(v.is_new?' new-vacancy':'');
+  div.id=`card-${v.id}`;
+
+  const ct=v.contact_type||'unknown';
+  const best=v.best_score||0;
+  const bestColor=scoreColor(best);
+
+  // score pills for header (compact)
+  const pillsHtml=Object.entries(v.scores||{}).map(([k,s])=>{
+    const pct=s.score||0;
+    const isBest=k===v.best_profile;
+    return `<span class="score-pill" style="background:${isBest?'var(--bg3)':'transparent'};
+      color:${scoreColor(pct)};${isBest?'border:1px solid var(--border)':''}">${pct}</span>`;
+  }).join('');
+
+  // full score bars for body
+  const barsHtml=Object.entries(v.scores||{}).map(([k,s])=>{
+    const pct=s.score||0;
+    const isBest=k===v.best_profile;
+    return `<div class="score-item${isBest?' score-best':''}">
+      <div class="score-profile">${k}</div>
+      <div class="score-bar-wrap">
+        <div class="score-bar"><div class="score-fill" style="width:${pct}%;background:${scoreColor(pct)}"></div></div>
+        <span class="score-val" style="color:${scoreColor(pct)}">${pct}</span>
+      </div>
+      ${isBest&&s.reason?`<div class="score-reason">${s.reason}</div>`:''}
+    </div>`;
+  }).join('');
+
+  // contact button
+  let contactBtn='';
+  if(ct==='tg'&&v.recruiter_handle){
+    contactBtn=`<a href="https://t.me/${v.recruiter_handle.replace('@','')}" target="_blank">
+      <button class="btn btn-ghost">💬 ${v.recruiter_handle}</button></a>`;
+  } else if(v.link){
+    const lbl={hh:'hh.ru →',form:'Форма →',linkedin:'LinkedIn →'}[ct]||'Открыть →';
+    contactBtn=`<a href="${v.link}" target="_blank"><button class="btn btn-ghost">🔗 ${lbl}</button></a>`;
+  }
+
+  div.innerHTML=`
+    <div class="card-head" onclick="toggleCard(${v.id})">
+      <div class="card-main">
+        <div class="card-title">
+          ${v.is_new?'<span class="badge b-new">новое</span>':''}
+          ${v.role}
+          ${ctBadge(ct)}
+        </div>
+        <div class="card-sub">
+          <span>${v.company}</span>
+          ${v.salary!=='—'?`<span>💰 ${v.salary}</span>`:''}
+          ${v.location!=='—'?`<span>📍 ${v.location}</span>`:''}
+          <span>${v.created_at}</span>
+        </div>
+      </div>
+      <div class="card-scores">${pillsHtml}</div>
+      <span class="card-chevron">▼</span>
+    </div>
+    <div class="card-body">
+      ${v.description&&v.description!=='—'?`<div class="desc">${v.description}</div>`:''}
+      <div class="scores">${barsHtml}</div>
+      <div class="action-panel">
+        <button class="btn btn-primary" onclick="toggleOutreach(${v.id})">✉️ Откликнуться</button>
+        ${contactBtn}
+        <a href="/api/resume/${v.id}" download><button class="btn btn-ghost">📄 Резюме</button></a>
+        <button class="btn btn-ghost" onclick="markApplied(${v.id})">✓ Отправил</button>
+        <button class="btn btn-ghost" onclick="markReplied(${v.id})">💬 Ответили</button>
+        <button class="btn btn-danger" onclick="hideCard(${v.id})">Скрыть</button>
+      </div>
+      <div class="outreach" id="op-${v.id}">
+        <div class="outreach-title">Черновик сообщения</div>
+        <div class="draft-controls">
+          <select class="style-sel" id="sty-${v.id}">
+            ${STYLES.map(s=>`<option value="${s}">${STYLE_LABELS[s]||s}</option>`).join('')}
+          </select>
+          <button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="generateDraft(${v.id})">
+            Сгенерировать
+          </button>
+          <button class="btn btn-ghost" style="padding:4px 10px;font-size:11px" onclick="copyDraft(${v.id})" id="copy-${v.id}">
+            📋 Скопировать
+          </button>
+        </div>
+        <textarea class="draft" id="dt-${v.id}" placeholder="Нажми «Сгенерировать»…"></textarea>
+        <div class="instructions" id="inst-${v.id}" style="display:none"></div>
+      </div>
+    </div>`;
+  return div;
+}
+
+function toggleCard(id){
+  const card=document.getElementById(`card-${id}`);
+  card.classList.toggle('expanded');
+}
+
+function toggleOutreach(id){
+  const op=document.getElementById(`op-${id}`);
+  const card=document.getElementById(`card-${id}`);
+  if(!card.classList.contains('expanded')) card.classList.add('expanded');
+  op.classList.toggle('show');
+}
+
+// ── draft ─────────────────────────────────────────────────────────────────────
+async function generateDraft(id){
+  const dt=document.getElementById(`dt-${id}`);
+  const sty=document.getElementById(`sty-${id}`);
+  dt.value='⏳ Генерирую…';
+  try{
+    const r=await fetch('/api/generate_draft',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({vacancy_id:id,style:sty?.value||'metric_hook'})
+    });
+    const d=await r.json();
+    if(d.draft){
+      dt.value=d.draft;
+      // load outreach instructions for non-TG
+      const inst=document.getElementById(`inst-${id}`);
+      if(inst){
+        const r2=await fetch(`/api/outreach_data/${id}`);
+        const d2=await r2.json();
+        if(d2.instructions){inst.textContent=d2.instructions;inst.style.display='';}
+      }
+    }else{
+      dt.value='✗ '+(d.error||'Ошибка генерации');
+    }
+  }catch(e){dt.value='✗ Ошибка сети';}
+}
+
+function copyDraft(id){
+  const dt=document.getElementById(`dt-${id}`);
+  if(!dt||!dt.value)return;
+  const btn=document.getElementById(`copy-${id}`);
+  if(navigator.clipboard){
+    navigator.clipboard.writeText(dt.value).then(()=>{
+      btn.textContent='✓ Скопировано';setTimeout(()=>btn.textContent='📋 Скопировать',1500);
+    });
+  }else{dt.select();document.execCommand('copy');btn.textContent='✓';setTimeout(()=>btn.textContent='📋 Скопировать',1500);}
+}
+
+// ── status ────────────────────────────────────────────────────────────────────
+async function markApplied(id){
+  const r=await fetch(`/api/mark_applied/${id}`,{method:'POST'});
+  const d=await r.json();
+  if(d.error==='rate_limit'){alert(`Лимит. Следующий слот: ${d.next_slot}`);return;}
+  if(d.ok){document.getElementById(`card-${id}`)?.remove();loadStats();}
+}
+async function markReplied(id){
+  await fetch(`/api/mark_replied/${id}`,{method:'POST'});
+  document.getElementById(`card-${id}`)?.remove();
+}
+async function hideCard(id){
+  await fetch(`/api/hide/${id}`,{method:'POST'});
+  document.getElementById(`card-${id}`)?.remove();
+}
+
+loadStats();
+loadVacancies();
+setInterval(loadStats,60000);
+</script>
+</body>
+</html>

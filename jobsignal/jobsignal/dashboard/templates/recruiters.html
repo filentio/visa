@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Рекрутёры — JobSignal</title>
+<style>
+:root{
+  --bg:#131722;--bg2:#1a2235;--bg3:#1e2d45;
+  --accent:#4F46E5;--accent2:#6366f1;
+  --green:#22c55e;--red:#ef4444;--amber:#f59e0b;--gray:#64748b;
+  --text:#e2e8f0;--text2:#94a3b8;--border:#2a3a55;
+  --radius:10px;--font:'Inter',system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;}
+a{color:var(--accent2);text-decoration:none;}
+nav{background:var(--bg2);border-bottom:1px solid var(--border);
+  padding:12px 20px;display:flex;align-items:center;gap:16px;}
+nav .logo{font-weight:700;font-size:15px;}
+nav a{color:var(--text2);font-size:13px;}
+nav a.active{color:var(--accent2);}
+.wrap{max-width:1100px;margin:0 auto;padding:24px 16px;}
+h2{font-size:20px;font-weight:700;margin-bottom:6px;}
+.subtitle{color:var(--text2);font-size:13px;margin-bottom:20px;}
+
+/* stats bar */
+.statbar{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap;}
+.stat{background:var(--bg2);border:1px solid var(--border);border-radius:8px;
+  padding:10px 16px;min-width:100px;}
+.stat-val{font-size:20px;font-weight:700;}
+.stat-lbl{font-size:11px;color:var(--text2);}
+
+/* search */
+.search-bar{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap;}
+input{background:var(--bg2);border:1px solid var(--border);color:var(--text);
+  border-radius:8px;padding:8px 12px;font-size:13px;outline:none;}
+input:focus{border-color:var(--accent);}
+.btn{padding:8px 16px;border-radius:8px;font-size:13px;font-weight:600;
+  cursor:pointer;border:none;}
+.btn-primary{background:var(--accent);color:#fff;}
+.btn-primary:hover{background:var(--accent2);}
+.btn-ghost{background:transparent;border:1px solid var(--border);color:var(--text2);}
+.btn-ghost:hover{border-color:var(--accent);color:var(--accent2);}
+
+/* table */
+.table-wrap{overflow-x:auto;}
+table{width:100%;border-collapse:collapse;}
+th{text-align:left;padding:10px 12px;font-size:11px;color:var(--text2);
+  border-bottom:1px solid var(--border);font-weight:600;text-transform:uppercase;letter-spacing:.5px;}
+td{padding:10px 12px;border-bottom:1px solid var(--border);font-size:13px;vertical-align:middle;}
+tr:hover td{background:var(--bg2);}
+.handle{font-family:monospace;color:var(--accent2);}
+.company{font-weight:600;}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;}
+.b-tg{background:#14532d;color:var(--green);}
+.b-hh{background:#1e3050;color:#60a5fa);}
+.b-manual{background:#2a2a2a;color:var(--gray);}
+.actions{display:flex;gap:6px;}
+.btn-sm{padding:4px 10px;font-size:11px;border-radius:6px;}
+
+/* contact chips */
+.contacts{display:flex;gap:6px;flex-wrap:wrap;}
+.chip{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;
+  border-radius:12px;font-size:11px;background:var(--bg3);border:1px solid var(--border);}
+.chip a{color:var(--text2);}
+.chip a:hover{color:var(--accent2);}
+
+/* edit modal */
+.modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;
+  align-items:center;justify-content:center;}
+.modal.show{display:flex;}
+.modal-box{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);
+  padding:24px;width:480px;max-width:95vw;}
+.modal-title{font-size:16px;font-weight:700;margin-bottom:16px;}
+.form-group{margin-bottom:12px;}
+.form-group label{display:block;font-size:12px;color:var(--text2);margin-bottom:4px;}
+.form-group input{width:100%;}
+.form-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px;}
+
+.empty{padding:40px;text-align:center;color:var(--text2);}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border);
+  border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;}
+@keyframes spin{to{transform:rotate(360deg);}}
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo">⚡ JobSignal</span>
+  <a href="/">Вакансии</a>
+  <a href="/channels">Каналы</a>
+  <a href="/resumes">Резюме</a>
+  <a href="/recruiters" class="active">Рекрутёры</a>
+</nav>
+
+<div class="wrap">
+  <h2>База рекрутёров</h2>
+  <p class="subtitle">Контакты рекрутёров из собранных вакансий. Используются для поиска контакта когда вакансия без прямого хэндла.</p>
+
+  <div class="statbar">
+    <div class="stat"><div class="stat-val" id="s-total">—</div><div class="stat-lbl">Рекрутёров</div></div>
+    <div class="stat"><div class="stat-val" id="s-with-tg">—</div><div class="stat-lbl">С TG</div></div>
+    <div class="stat"><div class="stat-val" id="s-companies">—</div><div class="stat-lbl">Компаний</div></div>
+  </div>
+
+  <div class="search-bar">
+    <input id="search-input" placeholder="Имя, @handle или компания…" style="min-width:260px"
+      oninput="debounceSearch()">
+    <button class="btn btn-primary" onclick="buildRecruiters()" id="build-btn">
+      🔄 Обновить базу
+    </button>
+  </div>
+
+  <div id="table-wrap">
+    <div class="empty"><span class="spinner"></span> Загрузка…</div>
+  </div>
+</div>
+
+<!-- edit modal -->
+<div class="modal" id="edit-modal">
+  <div class="modal-box">
+    <div class="modal-title">Редактировать контакт</div>
+    <input type="hidden" id="edit-handle">
+    <div class="form-group"><label>Имя</label><input id="edit-name" placeholder="Имя Фамилия"></div>
+    <div class="form-group"><label>Компания</label><input id="edit-company" placeholder="ООО Компания"></div>
+    <div class="form-group"><label>Telegram @handle</label><input id="edit-tg" placeholder="@hr_anna"></div>
+    <div class="form-group"><label>LinkedIn URL</label><input id="edit-linkedin" placeholder="https://linkedin.com/in/..."></div>
+    <div class="form-group"><label>Email</label><input id="edit-email" placeholder="hr@company.ru"></div>
+    <div class="form-group"><label>Заметки</label><input id="edit-notes" placeholder="…"></div>
+    <div class="form-actions">
+      <button class="btn btn-ghost" onclick="closeModal()">Отмена</button>
+      <button class="btn btn-primary" onclick="saveRecruiter()">Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let _all = [];
+let _deb = null;
+
+function debounceSearch(){clearTimeout(_deb);_deb=setTimeout(renderTable,300);}
+
+async function load(){
+  try{
+    const r=await fetch('/api/recruiters');
+    const d=await r.json();
+    _all=d.recruiters||[];
+    document.getElementById('s-total').textContent=_all.length;
+    document.getElementById('s-with-tg').textContent=_all.filter(r=>r.tg_handle).length;
+    const companies=new Set(_all.map(r=>r.company).filter(Boolean));
+    document.getElementById('s-companies').textContent=companies.size;
+    renderTable();
+  }catch(e){
+    document.getElementById('table-wrap').innerHTML='<div class="empty">Ошибка загрузки</div>';
+  }
+}
+
+function renderTable(){
+  const q=(document.getElementById('search-input').value||'').toLowerCase();
+  const filtered=q?_all.filter(r=>
+    (r.handle||'').toLowerCase().includes(q)||
+    (r.name||'').toLowerCase().includes(q)||
+    (r.company||'').toLowerCase().includes(q)
+  ):_all;
+
+  if(!filtered.length){
+    document.getElementById('table-wrap').innerHTML=
+      '<div class="empty">Рекрутёров не найдено. Нажми «Обновить базу» чтобы собрать контакты.</div>';
+    return;
+  }
+
+  const rows=filtered.map(r=>{
+    const src={tg:'b-tg',hh:'b-hh',manual:'b-manual'}[r.source]||'b-manual';
+    const contacts=[];
+    if(r.tg_handle) contacts.push(`<span class="chip"><a href="https://t.me/${r.tg_handle.replace('@','')}" target="_blank">💬 ${r.tg_handle}</a></span>`);
+    if(r.linkedin_url) contacts.push(`<span class="chip"><a href="${r.linkedin_url}" target="_blank">🔗 LinkedIn</a></span>`);
+    if(r.email) contacts.push(`<span class="chip"><a href="mailto:${r.email}">✉️ ${r.email}</a></span>`);
+    return `<tr>
+      <td><span class="handle">${r.handle||'—'}</span>
+        ${r.name?`<div style="font-size:11px;color:var(--text2)">${r.name}</div>`:''}</td>
+      <td class="company">${r.company||'—'}</td>
+      <td><span class="badge ${src}">${r.source||'?'}</span></td>
+      <td>${contacts.join('')||'<span style="color:var(--gray);font-size:11px">нет</span>'}</td>
+      <td style="color:var(--text2)">${r.vacancy_count||0}</td>
+      <td class="actions">
+        <button class="btn btn-ghost btn-sm" onclick='openEdit(${JSON.stringify(r)})'>✏️</button>
+        ${r.tg_handle?`<a href="https://t.me/${r.tg_handle.replace('@','')}" target="_blank"><button class="btn btn-ghost btn-sm">💬</button></a>`:''}
+      </td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('table-wrap').innerHTML=`
+    <div class="table-wrap">
+    <table>
+      <thead><tr>
+        <th>Handle / Имя</th><th>Компания</th><th>Источник</th>
+        <th>Контакты</th><th>Вакансий</th><th></th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    </div>`;
+}
+
+async function buildRecruiters(){
+  const btn=document.getElementById('build-btn');
+  btn.disabled=true;
+  btn.innerHTML='<span class="spinner"></span>';
+  try{
+    const r=await fetch('/api/recruiters/build',{method:'POST'});
+    const d=await r.json();
+    btn.innerHTML='🔄 Обновить базу';
+    btn.disabled=false;
+    await load();
+  }catch(e){
+    btn.innerHTML='🔄 Обновить базу';
+    btn.disabled=false;
+  }
+}
+
+function openEdit(r){
+  document.getElementById('edit-handle').value=r.handle||'';
+  document.getElementById('edit-name').value=r.name||'';
+  document.getElementById('edit-company').value=r.company||'';
+  document.getElementById('edit-tg').value=r.tg_handle||'';
+  document.getElementById('edit-linkedin').value=r.linkedin_url||'';
+  document.getElementById('edit-email').value=r.email||'';
+  document.getElementById('edit-notes').value=r.notes||'';
+  document.getElementById('edit-modal').classList.add('show');
+}
+
+function closeModal(){document.getElementById('edit-modal').classList.remove('show');}
+
+async function saveRecruiter(){
+  const handle=document.getElementById('edit-handle').value;
+  const data={
+    handle,
+    name:document.getElementById('edit-name').value,
+    company:document.getElementById('edit-company').value,
+    tg_handle:document.getElementById('edit-tg').value,
+    linkedin_url:document.getElementById('edit-linkedin').value,
+    email:document.getElementById('edit-email').value,
+    notes:document.getElementById('edit-notes').value,
+  };
+  await fetch('/api/recruiters/update',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(data)
+  });
+  closeModal();
+  load();
+}
+
+// click outside modal to close
+document.getElementById('edit-modal').addEventListener('click',e=>{
+  if(e.target===e.currentTarget) closeModal();
+});
+
+load();
+</script>
+</body>
+</html>

@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Шаблоны писем — JobSignal</title>
+<style>
+:root{
+  --bg:#131722;--bg2:#1a2235;--bg3:#1e2d45;
+  --accent:#4F46E5;--accent2:#6366f1;
+  --green:#22c55e;--amber:#f59e0b;--gray:#64748b;
+  --text:#e2e8f0;--text2:#94a3b8;--border:#2a3a55;
+  --radius:10px;--font:'Inter',system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;}
+a{color:var(--accent2);text-decoration:none;}
+nav{background:var(--bg2);border-bottom:1px solid var(--border);
+  padding:12px 20px;display:flex;align-items:center;gap:16px;}
+nav .logo{font-weight:700;font-size:15px;}
+nav a{color:var(--text2);font-size:13px;}
+nav a.active{color:var(--accent2);}
+.wrap{max-width:900px;margin:0 auto;padding:24px 16px;}
+h2{font-size:20px;font-weight:700;margin-bottom:6px;}
+.subtitle{color:var(--text2);font-size:13px;margin-bottom:24px;}
+
+/* template cards */
+.templates{display:flex;flex-direction:column;gap:16px;}
+.tpl-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;}
+.tpl-card.active-tpl{border-color:var(--accent);}
+.tpl-header{padding:14px 16px;display:flex;align-items:center;gap:12px;cursor:pointer;
+  border-bottom:1px solid var(--border);}
+.tpl-name{font-weight:600;font-size:14px;flex:1;}
+.tpl-desc{font-size:12px;color:var(--text2);}
+.tpl-badges{display:flex;gap:6px;}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;}
+.b-active{background:#14532d;color:var(--green);}
+.b-tg{background:#1e3050;color:#60a5fa;}
+.b-hh{background:#3b2f05;color:var(--amber);}
+.tpl-body{padding:16px;}
+.tpl-label{font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;}
+textarea{width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);
+  border-radius:8px;padding:12px;font-size:13px;font-family:'JetBrains Mono',monospace,sans-serif;
+  line-height:1.6;resize:vertical;outline:none;min-height:160px;}
+textarea:focus{border-color:var(--accent);}
+.tpl-note{font-size:11px;color:var(--gray);margin-top:8px;line-height:1.5;}
+.tpl-actions{display:flex;gap:8px;margin-top:12px;justify-content:flex-end;}
+.btn{padding:7px 16px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;border:none;}
+.btn-primary{background:var(--accent);color:#fff;}
+.btn-primary:hover{background:var(--accent2);}
+.btn-ghost{background:transparent;border:1px solid var(--border);color:var(--text2);}
+.btn-ghost:hover{border-color:var(--accent);color:var(--accent2);}
+.btn-danger{background:transparent;border:1px solid #ef4444;color:#ef4444;}
+
+.preview-box{background:var(--bg3);border:1px solid var(--border);border-radius:8px;
+  padding:14px;font-size:13px;line-height:1.7;white-space:pre-wrap;margin-top:12px;
+  color:var(--text2);}
+.preview-label{font-size:11px;color:var(--gray);margin-bottom:6px;}
+
+.toast{position:fixed;bottom:24px;right:24px;background:var(--green);color:#fff;
+  padding:10px 18px;border-radius:8px;font-size:13px;font-weight:600;
+  opacity:0;transition:opacity .3s;pointer-events:none;z-index:999;}
+.toast.show{opacity:1;}
+
+.vars-hint{background:var(--bg3);border:1px solid var(--border);border-radius:8px;
+  padding:12px 14px;margin-bottom:20px;font-size:12px;line-height:1.8;}
+.vars-hint code{background:var(--bg2);padding:1px 5px;border-radius:4px;
+  font-family:monospace;color:var(--accent2);}
+.spinner{display:inline-block;width:12px;height:12px;border:2px solid var(--border);
+  border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo">⚡ JobSignal</span>
+  <a href="/">Вакансии</a>
+  <a href="/channels">Каналы</a>
+  <a href="/resumes">Резюме</a>
+  <a href="/recruiters">Рекрутёры</a>
+  <a href="/analytics">Аналитика</a>
+  <a href="/cover-templates" class="active">Шаблоны</a>
+</nav>
+
+<div class="wrap">
+  <h2>Шаблоны сопроводительных писем</h2>
+  <p class="subtitle">Редактируй шаблоны под себя. При генерации LLM использует активный шаблон + реальный текст резюме.</p>
+
+  <div class="vars-hint">
+    <b>Доступные переменные:</b><br>
+    <code>{role}</code> — роль из вакансии &nbsp;
+    <code>{company}</code> — компания &nbsp;
+    <code>{name}</code> — имя рекрутёра (если есть) &nbsp;
+    <code>{companies}</code> — компании из резюме &nbsp;<br>
+    <code>{metric_1}</code> — лучший результат из резюме &nbsp;
+    <code>{metric_2}</code> — второй результат &nbsp;
+    <code>{profile}</code> — профиль (CPO / AI PM / Senior PM)
+  </div>
+
+  <div class="templates" id="templates-list">
+    <div style="padding:30px;text-align:center;color:var(--text2)">
+      <span class="spinner"></span> Загрузка…
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let templates = [];
+
+async function load(){
+  const r = await fetch('/api/cover-templates');
+  const d = await r.json();
+  templates = d.templates || [];
+  render();
+}
+
+function render(){
+  const el = document.getElementById('templates-list');
+  if(!templates.length){
+    el.innerHTML='<div style="padding:30px;text-align:center;color:var(--text2)">Шаблонов нет. Они создаются автоматически при первом открытии страницы.</div>';
+    return;
+  }
+  el.innerHTML = templates.map((t,i) => `
+    <div class="tpl-card ${t.is_active?'active-tpl':''}">
+      <div class="tpl-header">
+        <div>
+          <div class="tpl-name">${t.name}</div>
+          <div class="tpl-desc">${t.description||''}</div>
+        </div>
+        <div class="tpl-badges">
+          ${t.is_active?'<span class="badge b-active">✓ Активный</span>':''}
+          ${t.use_for_tg?'<span class="badge b-tg">TG</span>':''}
+          ${t.use_for_hh?'<span class="badge b-hh">hh.ru</span>':''}
+        </div>
+      </div>
+      <div class="tpl-body">
+        <div class="tpl-label">Системный промпт (инструкция для LLM)</div>
+        <textarea id="system-${t.id}" rows="4">${t.system_prompt||''}</textarea>
+        <div class="tpl-label" style="margin-top:12px">Шаблон письма</div>
+        <textarea id="body-${t.id}" rows="7">${t.body_template||''}</textarea>
+        <div class="tpl-note">
+          Переменные заменяются автоматически. LLM заполняет <code>{metric_1}</code> и <code>{metric_2}</code>
+          из реального текста резюме — без выдумок.
+        </div>
+        <div class="tpl-actions">
+          ${!t.is_active?`<button class="btn btn-ghost" onclick="setActive(${t.id})">Сделать активным</button>`:''}
+          <button class="btn btn-ghost" onclick="preview(${t.id})">👁 Предпросмотр</button>
+          <button class="btn btn-primary" onclick="save(${t.id})">Сохранить</button>
+        </div>
+        <div id="preview-${t.id}"></div>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function save(id){
+  const system = document.getElementById(`system-${id}`).value;
+  const body = document.getElementById(`body-${id}`).value;
+  const r = await fetch('/api/cover-templates/update', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({id, system_prompt:system, body_template:body})
+  });
+  const d = await r.json();
+  if(d.ok) toast('Сохранено ✓');
+  await load();
+}
+
+async function setActive(id){
+  await fetch('/api/cover-templates/set-active', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({id})
+  });
+  await load();
+  toast('Активный шаблон изменён ✓');
+}
+
+async function preview(id){
+  const body = document.getElementById(`body-${id}`).value;
+  const el = document.getElementById(`preview-${id}`);
+  el.innerHTML = `<div class="preview-label">Предпросмотр (с тестовыми данными)</div>
+    <div class="preview-box">${body
+      .replace('{role}','CPO / Head of Product')
+      .replace('{company}','Финтех Банк')
+      .replace('{name}','Анна')
+      .replace('{companies}','ФИНАМ, Мосбиржа, ОТП Банк')
+      .replace('{profile}','CPO / Head of Product')
+      .replace('{metric_1}','онбординг 15→3 мин, drop-off −22%')
+      .replace('{metric_2}','нагрузка КЦ −40%+, команда 15 человек')
+    }</div>`;
+}
+
+function toast(msg){
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(()=>el.classList.remove('show'), 2500);
+}
+
+load();
+</script>
+</body>
+</html>
