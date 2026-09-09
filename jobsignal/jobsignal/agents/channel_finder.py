@@ -162,8 +162,11 @@ def verify_channel(handle: str) -> dict:
                         latest = dt
                     if dt >= cutoff:
                         recent += 1
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Пост не попадёт в post_count_30d: канал будет выглядеть
+                    # менее живым, чем он есть. Молча этого делать нельзя.
+                    log.debug("[finder] %s: дата поста не разобрана: %s",
+                              handle, exc)
         result["post_count_30d"] = recent
         result["latest_post_date"] = latest
     except Exception as exc:

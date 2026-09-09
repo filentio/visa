@@ -321,10 +321,18 @@ def api_mark_applied(vid):
     try:
         import sqlite3 as _sq
         conn = _sq.connect("data/jobsignal.db")
-        conn.execute(
-            "INSERT OR IGNORE INTO applications (vacancy_id, message_text, channel, is_draft, sent_at, created_at) VALUES (?,?,?,?,datetime(\'now\'),datetime(\'now\'))",
-            (vid, draft, "manual", 0)
-        )
+        # Повторное нажатие не должно создавать вторую строку: индекса на
+        # vacancy_id нет, и OR IGNORE от дубля здесь не спасал — а лишний
+        # отклик съедал слот часовой квоты.
+        already = conn.execute(
+            "SELECT 1 FROM applications WHERE vacancy_id=? AND sent_at IS NOT NULL",
+            (vid,)
+        ).fetchone()
+        if not already:
+            conn.execute(
+                "INSERT INTO applications (vacancy_id, message_text, channel, is_draft, sent_at, created_at) VALUES (?,?,?,?,datetime(\'now\'),datetime(\'now\'))",
+                (vid, draft, "manual", 0)
+            )
         conn.commit()
         conn.close()
     except Exception as _e:
@@ -371,11 +379,27 @@ def api_hide(vid):
 def api_restore(vid):
     session = _session()
     v = session.get(Vacancy, vid)
+    warning = None
     if v:
+        # Возврат в работу — единственный живой путь, который может увести
+        # статус назад с applied. Строка отклика при этом остаётся: получится
+        # отправленный отклик у вакансии, которая снова числится matched, и
+        # воронка «отклики → ответы» перестанет сходиться. Решение за
+        # пользователем, но молча это происходить не должно.
+        sent = (
+            session.query(Application)
+            .filter(Application.vacancy_id == vid,
+                    Application.sent_at.is_not(None))
+            .first()
+        )
+        if sent is not None and v.status == VacancyStatus.applied:
+            warning = ("по вакансии уже есть отправленный отклик "
+                       f"от {sent.sent_at}; строка отклика сохранена")
+            log.warning("restore #%s: %s", vid, warning)
         v.status = VacancyStatus.matched
         session.commit()
     session.close()
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "warning": warning})
 
 
 @app.route("/api/resume/<int:vid>")
@@ -890,8 +914,11 @@ def api_analytics():
                 sent = datetime.fromisoformat(r["sent_at"].replace("Z", "+00:00"))
                 replied = datetime.fromisoformat(r["replied_at"].replace("Z", "+00:00"))
                 deltas.append((replied - sent).days)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Строка выпадает из среднего времени ответа — пусть это будет
+                # видно в логе, иначе метрика тихо считается по части выборки.
+                log.warning("avg_reply: вакансия #%s, даты не разобраны: %s",
+                            r["id"], exc)
         if deltas:
             avg_reply_days = round(sum(deltas) / len(deltas), 1)
 

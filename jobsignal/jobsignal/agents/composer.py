@@ -125,7 +125,12 @@ class ComposerAgent(BaseAgent):
                     log.warning("[composer] вакансия #%d: %s", v.id, exc)
                     errors += 1
                     continue
-                s.add(Application(vacancy_id=v.id, message_text=text, is_draft=True))
+                # Канал обязателен: черновик пишется под TG-рекрутёра
+                # (в выборке выше recruiter_handle не пуст), отправлять его
+                # будет пользователь из телеграма. sent_at пуст — черновик
+                # ещё никуда не ушёл и квоту не занимает.
+                s.add(Application(vacancy_id=v.id, message_text=text,
+                                  channel="telegram", is_draft=True))
                 v.status = VacancyStatus.DRAFTED
                 made += 1
             s.commit()

@@ -60,8 +60,10 @@ def _extract_pdf_text_fallback(pdf_path: str) -> str:
     try:
         from pdfminer.high_level import extract_text
         return extract_text(pdf_path)
-    except Exception:
-        pass
+    except ImportError:
+        pass  # библиотеки нет — штатно пробуем следующую
+    except Exception as exc:
+        log.warning("[resume] pdfminer не смог %s: %s", pdf_path, exc)
     # last resort: pdfplumber
     try:
         import pdfplumber

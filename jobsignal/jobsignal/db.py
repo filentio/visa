@@ -3,7 +3,8 @@ import enum
 from datetime import datetime, timezone
 from sqlalchemy import (
     create_engine, Column, Integer, String, Text, Float,
-    DateTime, Boolean, ForeignKey, UniqueConstraint, Enum as SAEnum
+    DateTime, Boolean, ForeignKey, UniqueConstraint, Index, text,
+    Enum as SAEnum
 )
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
@@ -93,14 +94,41 @@ class MatchScore(Base):
 
 
 class Application(Base):
+    """Отклик: черновик (is_draft=1, sent_at пуст) или отправленный.
+
+    Модель раньше расходилась с таблицей: здесь были draft_text/notes,
+    которых в БД нет, и не было message_text/channel/is_draft/created_at,
+    которые в БД объявлены NOT NULL. Из-за этого ORM-запись отклика падала
+    (composer), а create_all на чистой базе создавал таблицу, в которую не
+    проходил ни один из рабочих INSERT'ов. Держим модель равной схеме.
+
+    message_text и channel умышленно без default: канал («кто отправил» —
+    hh / telegram / manual) и текст должен назвать вызывающий код, иначе в
+    аналитику попадёт отклик неизвестного происхождения.
+    """
     __tablename__ = "applications"
     id = Column(Integer, primary_key=True)
     vacancy_id = Column(Integer, ForeignKey("vacancies.id"), nullable=False)
-    draft_text = Column(Text)
+    message_text = Column(Text, nullable=False)
+    channel = Column(String(32), nullable=False)
+    is_draft = Column(Boolean, nullable=False, default=False)
     sent_at = Column(DateTime)
+    created_at = Column(DateTime, nullable=False,
+                        default=lambda: datetime.now(timezone.utc))
     replied_at = Column(DateTime)
-    notes = Column(Text)
     vacancy = relationship("Vacancy", back_populates="applications")
+
+    # Частичные уникальные индексы вместо INSERT OR IGNORE: от повтора
+    # защищает схема, а нарушение NOT NULL при этом остаётся видимой ошибкой.
+    # Индексы частичные, потому что у вакансии законно бывают две строки —
+    # черновик и отправленный отклик (в базе так у #123); запрещаем только
+    # второй отправленный и второй черновик.
+    __table_args__ = (
+        Index("ux_applications_sent_vacancy", "vacancy_id", unique=True,
+              sqlite_where=text("sent_at IS NOT NULL")),
+        Index("ux_applications_draft_vacancy", "vacancy_id", unique=True,
+              sqlite_where=text("is_draft = 1")),
+    )
 
 
 # ── Channel discovery candidates (not yet added) ─────────────────────────────

@@ -153,28 +153,35 @@ class RecruiterBuilder:
                     """, (count + 1, now, new_company, rec_id))
                     updated += 1
                 else:
-                    conn.execute("""
-                        INSERT OR IGNORE INTO recruiters
+                    # Дубль отсекает SELECT выше (existing пуст) и UNIQUE(handle)
+                    # в схеме. OR IGNORE здесь ничего не добавлял, но глушил бы
+                    # и NOT NULL, и любую другую ошибку схемы: рекрутёр молча не
+                    # создавался, а счётчик added всё равно рос.
+                    cur = conn.execute("""
+                        INSERT INTO recruiters
                         (handle, name, company, source, tg_handle, last_seen_at, created_at)
                         VALUES (?,?,?,?,?,?,?)
                     """, (handle, name, company, source, handle, now, now))
-                    rec_id = conn.execute(
-                        "SELECT id FROM recruiters WHERE handle=?", (handle,)
-                    ).fetchone()
-                    if rec_id:
-                        rec_id = rec_id[0]
-                        added += 1
+                    rec_id = cur.lastrowid
+                    added += 1
 
                 # link recruiter <-> vacancy
                 if rec_id:
-                    try:
+                    # PRIMARY KEY(recruiter_id, vacancy_id) уже запрещает дубль,
+                    # поэтому проверяем явно и считаем только реально созданные
+                    # связи: раньше linked рос и на повторной связи, и на
+                    # проглоченной ошибке — цифра в отчёте не значила ничего.
+                    exists = conn.execute(
+                        "SELECT 1 FROM recruiter_vacancy "
+                        "WHERE recruiter_id=? AND vacancy_id=?",
+                        (rec_id, vac_id)
+                    ).fetchone()
+                    if not exists:
                         conn.execute(
-                            "INSERT OR IGNORE INTO recruiter_vacancy (recruiter_id, vacancy_id) VALUES (?,?)",
+                            "INSERT INTO recruiter_vacancy (recruiter_id, vacancy_id) VALUES (?,?)",
                             (rec_id, vac_id)
                         )
                         linked += 1
-                    except Exception:
-                        pass
 
             elif company:
                 # no handle but has company — we'll find recruiter by company later

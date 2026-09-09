@@ -614,22 +614,39 @@ class HHApplyAgent(BaseAgent):
         )
 
         if attempt.result.sent:
-            # Таблица applications в этой БД — message_text/channel/is_draft,
-            # схема шире модели в db.py, поэтому пишем явным INSERT.
-            # Письмо пишем только если оно действительно ушло.
-            session.execute(
+            # Письмо пишем только если оно действительно ушло: у
+            # APPLIED_NO_LETTER отклик создан кликом, текста не было — пустая
+            # строка тут честная, канал 'hh' отличает её от ручной отметки.
+            # Вторую отправленную строку по той же вакансии не создаём: очередь
+            # такие вакансии уже отсекает, но повтор внутри прогона удвоил бы
+            # списание квоты. То же условие закреплено уникальным индексом
+            # ux_applications_sent_vacancy.
+            already = session.execute(
                 sql_text(
-                    "INSERT INTO applications "
-                    "(vacancy_id, message_text, channel, is_draft, sent_at, created_at) "
-                    "VALUES (:vid, :text, 'hh', 0, :now, :now)"
+                    "SELECT 1 FROM applications "
+                    "WHERE vacancy_id = :vid AND sent_at IS NOT NULL"
                 ),
-                {
-                    "vid": attempt.vacancy_id,
-                    "text": (attempt.letter
-                             if attempt.result is Result.APPLIED else ""),
-                    "now": now,
-                },
-            )
+                {"vid": attempt.vacancy_id},
+            ).first()
+            if not already:
+                session.execute(
+                    sql_text(
+                        "INSERT INTO applications "
+                        "(vacancy_id, message_text, channel, is_draft, sent_at, created_at) "
+                        "VALUES (:vid, :text, 'hh', 0, :now, :now)"
+                    ),
+                    {
+                        "vid": attempt.vacancy_id,
+                        "text": (attempt.letter
+                                 if attempt.result is Result.APPLIED else ""),
+                        "now": now,
+                    },
+                )
+            else:
+                log.warning(
+                    "[hh_apply] вакансия #%s: отправленный отклик уже есть, "
+                    "вторую строку не пишем", attempt.vacancy_id,
+                )
 
         if attempt.result.closes_vacancy:
             self._set_status(session, attempt, VacancyStatus.applied)

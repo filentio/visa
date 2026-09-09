@@ -327,16 +327,32 @@ class NotifyBot:
             vid = int(data.split(":")[1])
             conn = sqlite3.connect(DB_PATH)
             conn.execute("UPDATE vacancies SET status='applied' WHERE id=?", (vid,))
+            row = conn.execute(
+                "SELECT role, company, draft_text FROM vacancies WHERE id=?",
+                (vid,)
+            ).fetchone()
             # create application record
             from datetime import datetime, timezone
             now = datetime.now(timezone.utc).isoformat()
-            conn.execute(
-                "INSERT OR IGNORE INTO applications (vacancy_id, sent_at) VALUES (?,?)",
-                (vid, now)
-            )
+            # Кнопку жмёт человек и отклик отправляет сам, поэтому канал —
+            # manual, а не telegram: иначе ручные отметки неотличимы от писем,
+            # которые действительно отправила система.
+            # Раньше здесь стоял INSERT OR IGNORE только с (vacancy_id,
+            # sent_at): message_text и channel в схеме NOT NULL, а слово
+            # IGNORE гасит именно это нарушение — строка молча не
+            # создавалась, отклик не попадал ни в квоту, ни в аналитику.
+            already = conn.execute(
+                "SELECT 1 FROM applications WHERE vacancy_id=? AND sent_at IS NOT NULL",
+                (vid,)
+            ).fetchone()
+            if not already:
+                conn.execute(
+                    "INSERT INTO applications "
+                    "(vacancy_id, message_text, channel, is_draft, sent_at, created_at) "
+                    "VALUES (?,?,'manual',0,?,?)",
+                    (vid, (row[2] or "").strip() if row else "", now, now)
+                )
             conn.commit()
-            # get vacancy name for confirmation
-            row = conn.execute("SELECT role, company FROM vacancies WHERE id=?", (vid,)).fetchone()
             conn.close()
             role = row[0] if row else "вакансия"
             company = row[1] if row else ""
