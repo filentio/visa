@@ -1,0 +1,16 @@
+# Карьерные профили для мульти-таргет скоринга.
+# Матчер оценит каждую вакансию под КАЖДЫЙ профиль (% + обоснование).
+# - cv_path     — сжатый текст резюме для скоринга (markdown/текст).
+# - resume_path — готовый PDF, который ты прикладываешь рекрутёру (скачивается из дашборда).
+# Положи PDF-резюме в config/resumes/. Если файла нет — кнопка скачивания просто не покажется.
+
+profiles:
+  - name: "Senior AI PM"
+    cv_path: ./config/cv_ai_pm.md
+    resume_path: ./config/resumes/ai_pm.pdf
+  - name: "CPO / Head of Product"
+    cv_path: ./config/cv_cpo.md
+    resume_path: ./config/resumes/cpo.pdf
+  - name: "Senior PM/PO"
+    cv_path: ./config/cv_pm.md
+    resume_path: ./config/resumes/pm.pdf

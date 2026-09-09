@@ -269,17 +269,30 @@ def api_stats():
 def api_generate_draft():
     data = request.get_json()
     vid = data.get("vacancy_id")
-    style = data.get("style", "metric_hook")
     session = _session()
-    v = session.get(Vacancy, vid)
+    from sqlalchemy.orm import joinedload
+    v = session.query(Vacancy).options(joinedload(Vacancy.match_scores)).filter_by(id=vid).first()
     if not v:
         session.close()
         return jsonify({"error": "not found"}), 404
     try:
-        composer = Composer()
-        text = composer.generate(v, style=style)
-        if not text or text.startswith("✗"):
-            raise ValueError(text or "пустой ответ модели")
+        # determine best profile
+        best_profile = "Senior PM/PO"
+        best_score = 0
+        for sc in (v.match_scores or []):
+            if sc.score > best_score:
+                best_score = sc.score
+                best_profile = sc.profile_key
+        # use unified cover generator from notify_bot
+        from jobsignal.agents.notify_bot import _cover_text
+        text = _cover_text(
+            role=v.role or "",
+            company=v.company or "",
+            profile_key=best_profile,
+            recruiter_name="",
+        )
+        if not text:
+            raise ValueError("пустой ответ модели")
         v.draft_text = text
         if v.status == VacancyStatus.matched:
             v.status = VacancyStatus.drafted
@@ -319,27 +332,25 @@ def api_outreach_data(vid):
 @app.route("/api/mark_applied/<int:vid>", methods=["POST"])
 @_requires_auth
 def api_mark_applied(vid):
-    rate = _rate_status()
-    if rate["allowed_now"] <= 0:
-        return jsonify({
-            "error": "rate_limit",
-            "next_slot": rate["next_slot"],
-        }), 429
-
     session = _session()
     v = session.get(Vacancy, vid)
     if not v:
         session.close()
         return jsonify({"error": "not found"}), 404
     v.status = VacancyStatus.applied
-    app_rec = Application(
-        vacancy_id=vid,
-        draft_text=v.draft_text,
-        sent_at=datetime.now(timezone.utc),
-    )
-    session.add(app_rec)
     session.commit()
     session.close()
+    try:
+        import sqlite3 as _sq
+        conn = _sq.connect("data/jobsignal.db")
+        conn.execute(
+            "INSERT OR IGNORE INTO applications (vacancy_id, message_text, channel, is_draft, sent_at, created_at) VALUES (?,?,?,?,datetime(\'now\'),datetime(\'now\'))",
+            (vid, "", "tg", 0)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as _e:
+        log.warning("application insert: %s", _e)
     return jsonify({"ok": True, "rate": _rate_status()})
 
 

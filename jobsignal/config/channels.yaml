@@ -1,0 +1,50 @@
+# Курированный список под профиль: CPO / Head of Product / Senior PM / Senior AI PM + финтех.
+# Отобран из каталога JobSignal (290 каналов) по тегам product / management / finance /
+# analytics / ai-ml / exec. Лишнее убирай, нужное добавляй — потом `seed-channels`.
+
+cv_path: ./config/cv.md   # положи сюда своё резюме (md/txt) — понадобится на Этапе 3
+
+channels:
+  # --- Продакт / проджект-менеджмент ---
+  - { handle: "@hh_vacancy_product_project", title: "Работа для продактов и проджектов", niche: "product" }
+  - { handle: "@jobs_product_managers", title: "Вакансии продакт менеджеров", niche: "product/fintech" }
+  - { handle: "@forproducts", title: "Job for Products and Projects", niche: "product" }
+  - { handle: "@jobs_pm", title: "PM Jobs (Project/Product)", niche: "product/management" }
+  - { handle: "@pm_rabota", title: "Работа project manager", niche: "product/management" }
+  - { handle: "@careerstation_pm", title: "CareerStation | продакты/проджекты", niche: "product" }
+  - { handle: "@hireproproduct", title: "Hire ProProduct", niche: "product/data" }
+  - { handle: "@peersjobboard", title: "Peers Jobs: стратегия, продукт, ИИ", niche: "product/ai" }
+  - { handle: "@JobOfferInside", title: "Offer Inside", niche: "product/marketing" }
+  - { handle: "@cstalents", title: "Таланты Customer Success", niche: "product/sales" }
+  - { handle: "@workayte", title: "Работа в ИТ", niche: "product/dev" }
+  - { handle: "@careerspace", title: "careerspace", niche: "product/analytics/finance" }
+
+  # --- AI / ML / Data (под Senior AI PM) ---
+  - { handle: "@ml_jobs", title: "AI | ML Jobs", niche: "ai-ml" }
+  - { handle: "@data_science_job", title: "Вакансии data science и ML", niche: "ai-ml/data" }
+  - { handle: "@datasciencejobs", title: "Data Science Jobs", niche: "ai-ml/data" }
+  - { handle: "@foranalysts", title: "Job for Analysts & Data Scientists", niche: "analytics/data" }
+  - { handle: "@peersglobaljobs", title: "Peers Global Jobs: strategy, product, AI", niche: "product/ai" }
+
+  # --- Финтех / финансы (домен) ---
+  - { handle: "@bankman_20", title: "BANKMAN // Вакансии в банках", niche: "finance" }
+  - { handle: "@finexecutive", title: "FinExecutive", niche: "finance" }
+  - { handle: "@cfo_ifrs", title: "Вакансии CFO/IFRS", niche: "finance" }
+  - { handle: "@Perforum_jobs", title: "Perforum jobs", niche: "finance/analytics" }
+  - { handle: "@podorogenarabotu", title: "По Дороге На Работу", niche: "finance/product" }
+  - { handle: "@middle_top_vacancies", title: "Миддл и Топ-менеджеров", niche: "finance/product" }
+
+  # --- Топ / руководящие (под CPO / Head of Product) ---
+  - { handle: "@forchiefs", title: "Job for Chiefs (TOP vacancies)", niche: "exec" }
+  - { handle: "@work_for_top", title: "КАРЬЕРА ЛИДЕРА", niche: "exec" }
+  - { handle: "@MVTOPvacancy", title: "MV: вакансии для руководителей", niche: "exec" }
+  - { handle: "@careerfedoroff", title: "Fedoroff | Вакансии для ТОП", niche: "exec" }
+  - { handle: "@c_level_top", title: "Вакансии C-level", niche: "exec" }
+  - { handle: "@toplevel_job", title: "TOP LEVEL JOB", niche: "exec" }
+  - { handle: "@workfortop", title: "Work For TOP", niche: "exec" }
+  - { handle: "@jobfortm", title: "Job for IT-TOP (Technical Managers)", niche: "exec/tech" }
+
+  # --- Широкие IT/Digital-агрегаторы с продуктовыми ролями ---
+  - { handle: "@theypaywell", title: "Вакансии с ЗП выше 100 тысяч", niche: "product/dev" }
+  - { handle: "@ITjobsFeed", title: "Jobs Feed IT & Digital", niche: "product/data" }
+  - { handle: "@geekjobs", title: "Job in IT&Digital", niche: "digital" }

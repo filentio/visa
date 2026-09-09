@@ -48,8 +48,8 @@ def main():
         logging.info("Каналов добавлено: %d", added)
 
     elif cmd == "collect":
-        from jobsignal.agents.collector import Collector
-        result = Collector().run()
+        from jobsignal.agents.collector import CollectorAgent as Collector
+        from jobsignal.config import get_config; result = Collector(get_config()).run()
         logging.info("сбор: %s", result)
 
     elif cmd == "posts":
@@ -68,14 +68,14 @@ def main():
         logging.info("парсинг: %s", result)
 
     elif cmd == "dedup":
-        from jobsignal.agents.dedup import Deduplicator
-        result = Deduplicator().run()
+        from jobsignal.agents.dedup import DeduplicatorAgent as Deduplicator
+        from jobsignal.config import get_config; result = Deduplicator(get_config()).run()
         logging.info("дедуп: %s", result)
 
     elif cmd == "match":
         limit = int(arg) if arg else None
-        from jobsignal.agents.matcher import Matcher
-        result = Matcher().run(limit=limit)
+        from jobsignal.agents.matcher import MatcherAgent as Matcher
+        from jobsignal.config import get_config; result = Matcher(get_config()).run(limit=limit)
         logging.info("матчинг: %s", result)
 
     elif cmd == "compose":
@@ -98,11 +98,6 @@ def main():
             print(f"\n--- @{v.recruiter_handle} | {v.role} @ {v.company} ---")
             print(text)
         s.close()
-
-    elif cmd == "notify-check":
-        from jobsignal.agents.notify_bot import NotifyBot
-        result = NotifyBot().check_and_notify()
-        logging.info("уведомления: %s", result)
 
     elif cmd == "build-recruiters":
         from jobsignal.agents.recruiter_builder import RecruiterBuilder
@@ -135,14 +130,14 @@ def main():
         s.close()
 
     elif cmd == "pipeline":
-        from jobsignal.orchestrator import run_pipeline
+        from jobsignal.orchestrator import Orchestrator
         # also collect from hh.ru
         try:
             from jobsignal.agents.hh_collector import HHCollector
             HHCollector().run()
         except Exception as e:
             logging.warning("hh collect error: %s", e)
-        run_pipeline()
+        Orchestrator().run_once()
 
     elif cmd == "status":
         from jobsignal.db import get_session_factory, Channel, RawPost, Vacancy, Application, Application as Reply

@@ -139,7 +139,7 @@ class Parser:
         self._sf = get_session_factory()
 
     def run(self, limit: Optional[int] = None) -> dict:
-        from jobsignal.llm import call_llm, LLMError
+        from jobsignal.llm import complete_text, LLMError
         batch = int(__import__('os').environ.get("PARSER_BATCH_LIMIT", "200"))
         if limit:
             batch = limit
@@ -182,7 +182,7 @@ class Parser:
         return summary
 
     def _parse_post(self, post: RawPost, session) -> str:
-        from jobsignal.llm import call_llm, LLMError, _loads_lenient
+        from jobsignal.llm import complete_text, LLMError, _loads_lenient
 
         text = (post.text or "").strip()
         if not text or len(text) < 30:
@@ -193,11 +193,7 @@ class Parser:
 
         prompt = f"Текст вакансии:\n\n{text[:3000]}"
         try:
-            raw = call_llm(
-                system=SYSTEM,
-                user=prompt,
-                max_tokens=400,
-            )
+            raw = complete_text(SYSTEM, prompt, "", 400)
         except LLMError as exc:
             log.warning("[parser] LLM error post %d: %s", post.id, exc)
             return "error"

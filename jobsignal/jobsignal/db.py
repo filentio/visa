@@ -18,6 +18,9 @@ class VacancyStatus(enum.Enum):
     replied = "replied"
     skipped = "skipped"
     rejected = "rejected"
+    no_reply = "no_reply"
+    interview = "interview"
+    offer = "offer"
 
 
 class Channel(Base):
@@ -43,6 +46,7 @@ class RawPost(Base):
     channel_id = Column(Integer, ForeignKey("channels.id"), nullable=False)
     tg_message_id = Column(Integer, nullable=False)
     text = Column(Text)
+    raw_text = Column(Text)  # legacy alias
     post_url = Column(String)
     posted_at = Column(DateTime)
     parsed = Column(Boolean, default=False)
@@ -123,3 +127,7 @@ def get_session_factory(url: str = "sqlite:///./data/jobsignal.db"):
     engine = get_engine(url)
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)
+
+from datetime import datetime, timezone
+def utcnow():
+    return datetime.now(timezone.utc)
