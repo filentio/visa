@@ -3,7 +3,7 @@
 Гоняет агентов по порядку. На Этапе 0 каждый агент — заглушка, но сам конвейер,
 логирование и порядок шагов уже рабочие. Запускается вручную или по расписанию.
 
-Порядок: collector → parser → deduplicator → matcher → composer → outreach.
+Порядок: collector → raw_dedup → parser → deduplicator → matcher → composer → outreach.
 ReplyMonitor живёт отдельным долгоживущим процессом (слушатель входящих), не в этом цикле.
 """
 from __future__ import annotations
@@ -15,6 +15,7 @@ from .agents import (
     DeduplicatorAgent,
     MatcherAgent,
     ParserAgent,
+    RawDeduplicatorAgent,
 )
 from .config import AppConfig, get_config
 
@@ -24,6 +25,7 @@ log = logging.getLogger("jobsignal")
 # Composer/Outreach — semi-auto, запускаются из дашборда по кнопке, не по расписанию.
 PIPELINE = [
     CollectorAgent,
+    RawDeduplicatorAgent,   # грубый дедуп по хешу текста — до платного разбора
     ParserAgent,
     DeduplicatorAgent,
     MatcherAgent,

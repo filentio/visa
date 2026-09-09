@@ -126,6 +126,7 @@ def _get_active_template() -> dict | None:
 def _cover_text(role: str, company: str, profile_key: str, recruiter_name: str = "") -> str:
     """Generate cover letter using active template + real resume text. No hallucinations."""
     from jobsignal.agents.resume_parser import get_resume_text
+    from jobsignal.config import get_config
     from jobsignal.llm import complete_text
 
     resume_key = PROFILE_KEY_MAP.get(profile_key, "pm")
@@ -179,7 +180,13 @@ def _cover_text(role: str, company: str, profile_key: str, recruiter_name: str =
     )
 
     try:
-        return complete_text(system_prompt, user, "", 350)
+        # Модель обязательна: с пустой строкой Anthropic отвечает 400
+        # ("model: String should have at least 1 character"), и письмо молча
+        # подменялось заглушкой на 2 строки. Берём модель из конфига.
+        model = get_config().settings.anthropic_model
+        # Кириллица дорога по токенам (~1 символ на токен): на 350-1200
+        # письмо обрывалось на полуслове, 2000 хватает на 5-7 предложений.
+        return complete_text(system_prompt, user, model, 2000).strip()
     except Exception as e:
         log.warning("[notify] cover LLM error: %s", e)
         return f"Добрый день{name_part}\n\nЗаинтересовала вакансия {role}{company_part}. Прилагаю резюме — готов обсудить."

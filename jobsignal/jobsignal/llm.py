@@ -45,14 +45,46 @@ def _get_client():
     return _client
 
 
-def _anthropic_text(system, user, model, max_tokens):
+def _log_usage(model, usage, tag=""):
+    """Пишет фактический расход токенов по ответу.
+
+    Без этих строк экономию не с чем сравнить: input_tokens — вход по полной цене,
+    cache_creation_input_tokens — запись в кэш (1.25x), cache_read_input_tokens —
+    чтение из кэша (0.1x), output_tokens — выход. Поля могут прийти None.
+    """
+    def _n(name):
+        return getattr(usage, name, 0) or 0
+
+    log.info("[usage]%s model=%s in=%d cache_w=%d cache_r=%d out=%d",
+             f" {tag}" if tag else "", model,
+             _n("input_tokens"), _n("cache_creation_input_tokens"),
+             _n("cache_read_input_tokens"), _n("output_tokens"))
+
+
+def _anthropic_text(system, user, model, max_tokens, tag="", cache_system=False):
+    """cache_system=True — ставит точку кэширования на системный промпт.
+
+    Порядок сборки промпта — tools -> system -> messages, поэтому кэшируется
+    именно префикс: система должна быть байт-в-байт одинаковой внутри прогона,
+    а меняющийся текст вакансии идёт в messages, уже после точки кэширования.
+    Минимальный кэшируемый префикс у claude-sonnet-5 — 1024 токена; короче
+    кэш не создаётся молча, без ошибки. TTL — 5 минут от начала запроса.
+    """
+    system_param = system
+    if cache_system:
+        system_param = [{
+            "type": "text",
+            "text": system,
+            "cache_control": {"type": "ephemeral"},
+        }]
     try:
         resp = _get_client().messages.create(
-            model=model, max_tokens=max_tokens, system=system,
+            model=model, max_tokens=max_tokens, system=system_param,
             messages=[{"role": "user", "content": user}],
         )
     except Exception as exc:  # noqa: BLE001
         raise LLMError(str(exc)) from exc
+    _log_usage(model, resp.usage, tag)
     return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
 
 
@@ -221,22 +253,27 @@ def _loads_lenient(text: str) -> dict:
     raise json.JSONDecodeError("не удалось распарсить", t, 0)
 
 
-def _raw(system, user, model, max_tokens, as_json):
+def _raw(system, user, model, max_tokens, as_json, tag="", cache_system=False):
     provider = get_config().settings.llm_provider
     if provider == "ollama":
         return _ollama_chat(system, user, max_tokens, as_json=as_json)
     if provider == "gigachat":
         return _gigachat_chat(system, user, max_tokens)
-    return _anthropic_text(system, user, model, max_tokens)
+    return _anthropic_text(system, user, model, max_tokens, tag=tag,
+                           cache_system=cache_system)
 
 
-def complete_text(system: str, user: str, model: str, max_tokens: int = 1024) -> str:
-    return _raw(system, user, model, max_tokens, as_json=False)
+def complete_text(system: str, user: str, model: str, max_tokens: int = 1024,
+                  tag: str = "", cache_system: bool = False) -> str:
+    return _raw(system, user, model, max_tokens, as_json=False, tag=tag,
+                cache_system=cache_system)
 
 
-def complete_json(system: str, user: str, model: str, max_tokens: int = 1024) -> dict:
+def complete_json(system: str, user: str, model: str, max_tokens: int = 1024,
+                  tag: str = "", cache_system: bool = False) -> dict:
     """JSON-ответ. LLMError — транзиентный сбой (ретрай); ValueError — кривой JSON."""
-    raw = _raw(system, user, model, max_tokens, as_json=True)
+    raw = _raw(system, user, model, max_tokens, as_json=True, tag=tag,
+               cache_system=cache_system)
     try:
         return _loads_lenient(raw)
     except json.JSONDecodeError as exc:

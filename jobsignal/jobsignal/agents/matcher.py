@@ -21,6 +21,9 @@ from .base import BaseAgent
 log = logging.getLogger("jobsignal")
 
 CV_CAP = 4000  # ограничение длины резюме в промпте (контроль токенов)
+# потолок на описание вакансии: требования и обязанности почти всегда в начале,
+# а без предела одна многословная вакансия стоит как десяток обычных
+DESC_CAP = 3000
 
 SYSTEM_TMPL = (
     "Ты оцениваешь, насколько вакансия подходит кандидату под каждый из его "
@@ -39,7 +42,7 @@ def _vacancy_text(v: Vacancy) -> str:
         f"Компания: {v.company or '—'}\n"
         f"Локация: {v.location or '—'}\n"
         f"Зарплата: {v.salary or '—'}\n"
-        f"Описание: {v.description or '—'}"
+        f"Описание: {(v.description or '—')[:DESC_CAP]}"
     )
 
 
@@ -87,7 +90,11 @@ class MatcherAgent(BaseAgent):
 
             for v in vacs:
                 try:
-                    data = complete_json(system, _vacancy_text(v), model=model, max_tokens=900)
+                    # cache_system=True: система (три резюме) одинакова для всех
+                    # вакансий прогона — со второй вакансии она читается из кэша
+                    data = complete_json(system, _vacancy_text(v), model=model,
+                                         max_tokens=900, tag=f"vac#{v.id}",
+                                         cache_system=True)
                 except LLMError as exc:
                     log.warning("[matcher] вакансия #%d: ошибка API (%s) — на ретрай", v.id, exc)
                     errors += 1

@@ -73,7 +73,8 @@ def generate_draft(vacancy: Vacancy, profile_name: str, cv_text: str, model: str
         f"Описание: {vacancy.description or '—'}\n\n"
         f"МОЙ ПРОФИЛЬ — {profile_name}:\n{cv_text[:CV_CAP]}"
     )
-    return complete_text(_system_for(style), user, model=model, max_tokens=400).strip()
+    return complete_text(_system_for(style), user, model=model, max_tokens=400,
+                         tag=f"vac#{vacancy.id}", cache_system=True).strip()
 
 
 def best_profile_name(v: Vacancy) -> str | None:
@@ -129,7 +130,7 @@ class ComposerAgent(BaseAgent):
 
 class Composer:
     def generate(self, vacancy, style: str = "metric_hook") -> str:
-        import os, pathlib
+        import pathlib
         best_profile = "Senior PM/PO"
         best_score = 0
         for sc in (getattr(vacancy, 'match_scores', None) or []):
@@ -142,5 +143,9 @@ class Composer:
         key = profile_map.get(best_profile, "pm")
         cv_path = pathlib.Path("config") / f"cv_{key}.md"
         cv_text = cv_path.read_text() if cv_path.exists() else ""
-        model = os.environ.get("GIGACHAT_MODEL", "GigaChat")
+        # Раньше здесь бралось GIGACHAT_MODEL (по умолчанию "GigaChat") — у
+        # Anthropic это 404 not_found_error, и кнопка «сгенерировать письмо» в
+        # дашборде падала. Письмо — качество важнее цены, поэтому основная модель.
+        from ..config import get_config
+        model = get_config().settings.anthropic_model
         return generate_draft(vacancy, best_profile, cv_text, model, style=style)

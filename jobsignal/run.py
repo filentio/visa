@@ -14,7 +14,7 @@ logging.basicConfig(
 
 COMMANDS = (
     "initdb", "seed-channels", "collect", "posts",
-    "parse", "dedup", "match", "compose",
+    "raw-dedup", "parse", "dedup", "match", "compose",
     "hh-collect", "find-channels",          # NEW: search tgstat/telemetr
     "hh-apply", "hh-preview",                # NEW: автоотклик на hh.ru
     "channels",               # NEW: list channels
@@ -61,6 +61,12 @@ def main():
         for p in posts:
             print(f"[{p.id}] {(p.text or '')[:120]}")
         s.close()
+
+    elif cmd == "raw-dedup":
+        from jobsignal.agents.raw_dedup import RawDeduplicatorAgent
+        from jobsignal.config import get_config
+        logging.info("дедуп сырых постов: %s",
+                     RawDeduplicatorAgent(get_config()).run())
 
     elif cmd == "parse":
         limit = int(arg) if arg else None

@@ -2,6 +2,7 @@ from .collector import CollectorAgent
 from .dedup import DeduplicatorAgent
 from .matcher import MatcherAgent
 from .parser import Parser as _Parser
+from .raw_dedup import RawDeduplicatorAgent
 from jobsignal.config import AppConfig
 
 class ParserAgent(_Parser):
@@ -13,4 +14,5 @@ class ParserAgent(_Parser):
     def name(self):
         return "parser"
 
-__all__ = ["CollectorAgent", "ParserAgent", "DeduplicatorAgent", "MatcherAgent"]
+__all__ = ["CollectorAgent", "RawDeduplicatorAgent", "ParserAgent",
+           "DeduplicatorAgent", "MatcherAgent"]

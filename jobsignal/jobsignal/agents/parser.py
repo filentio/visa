@@ -182,6 +182,7 @@ class Parser:
         return summary
 
     def _parse_post(self, post: RawPost, session) -> str:
+        from jobsignal.config import get_config
         from jobsignal.llm import complete_text, LLMError, _loads_lenient
 
         text = (post.text or "").strip()
@@ -192,8 +193,13 @@ class Parser:
         text_links = _extract_links_from_text(text)
 
         prompt = f"Текст вакансии:\n\n{text[:3000]}"
+        # Модель обязательна: с пустой строкой Anthropic отвечает 400
+        # ("model: String should have at least 1 character"). На GigaChat это
+        # проходило — там model из запроса игнорируется. PARSER_MODEL дешевле
+        # основной модели, а разбору полей большего и не нужно.
+        model = get_config().settings.parser_model
         try:
-            raw = complete_text(SYSTEM, prompt, "", 400)
+            raw = complete_text(SYSTEM, prompt, model, 400, tag=f"post#{post.id}")
         except LLMError as exc:
             log.warning("[parser] LLM error post %d: %s", post.id, exc)
             return "error"
