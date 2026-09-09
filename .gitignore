@@ -4,6 +4,11 @@ config/.env
 state.json
 *.pem
 *.key
+*.session
+
+# Персональные данные — репозиторий публичный
+config/cv_*.md
+config/resumes/
 
 # Данные
 data/
