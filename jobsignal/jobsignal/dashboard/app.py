@@ -21,6 +21,8 @@ from jobsignal.db import (
 )
 from jobsignal.agents.outreach import detect_contact_type, get_outreach_data
 from jobsignal.agents.composer import Composer, STYLES
+from jobsignal.config import OutreachMode
+from jobsignal.ratelimit import rate_status
 
 log = logging.getLogger("jobsignal")
 
@@ -71,41 +73,9 @@ def _best_score(vacancy) -> tuple[int, str]:
 
 
 def _rate_status() -> dict:
-    session = _session()
-    now = datetime.now(timezone.utc)
-    per_hour = int(os.environ.get("OUTREACH_PER_HOUR", "3"))
-    per_day = int(os.environ.get("OUTREACH_PER_DAY", "15"))
-
-    hour_ago = now - timedelta(hours=1)
-    day_ago = now - timedelta(days=1)
-
-    sent_hour = (
-        session.query(func.count(Application.id))
-        .filter(Application.sent_at >= hour_ago)
-        .scalar()
-    )
-    sent_day = (
-        session.query(func.count(Application.id))
-        .filter(Application.sent_at >= day_ago)
-        .scalar()
-    )
-    session.close()
-
-    allowed = min(per_hour - sent_hour, per_day - sent_day)
-    allowed = max(0, allowed)
-
-    next_slot_str = ""
-    if allowed == 0:
-        next_slot_str = (hour_ago + timedelta(hours=1)).strftime("%H:%M")
-
-    return {
-        "sent_hour": sent_hour,
-        "sent_day": sent_day,
-        "per_hour": per_hour,
-        "per_day": per_day,
-        "allowed_now": allowed,
-        "next_slot": next_slot_str,
-    }
+    """Лимиты откликов. Единая реализация в jobsignal.ratelimit — её же
+    использует HHApplyAgent, чтобы дашборд и автоотклик считали одну квоту."""
+    return rate_status()
 
 
 def _is_new(v: Vacancy) -> bool:
@@ -159,7 +129,8 @@ def index():
             profiles[p["key"]] = p["name"]
     except Exception:
         profiles = {"ai_pm": "Senior AI PM", "cpo": "CPO / Head of Product", "pm": "Senior PM/PO"}
-    return render_template("index.html", styles=list(STYLES.keys()), profiles=profiles)
+    return render_template("index.html", styles=list(STYLES.keys()),
+                           profiles=profiles, outreach_mode=_outreach_mode())
 
 
 @app.route("/api/vacancies")
@@ -667,6 +638,115 @@ def api_pipeline_run():
     return jsonify({"ok": True, "message": "Конвейер запущен в фоне (~3-5 мин)"})
 
 
+
+
+# ── hh.ru автоотклик ──────────────────────────────────────────────────────────
+
+def _outreach_mode() -> str:
+    """semi_auto (дефолт) | full_auto. Читается из OUTREACH_MODE в config/.env."""
+    raw = (os.environ.get("OUTREACH_MODE") or "").split("#")[0].strip().lower()
+    return raw if raw in (OutreachMode.SEMI_AUTO.value, OutreachMode.FULL_AUTO.value) \
+        else OutreachMode.SEMI_AUTO.value
+
+
+# Состояние фонового прогона: один в момент времени.
+_HH_JOB: dict = {"running": False, "started_at": None, "mode": None,
+                 "limit": None, "result": None, "error": None}
+
+
+@app.route("/api/hh_apply/status")
+@_requires_auth
+def api_hh_apply_status():
+    """Состояние прогона + очередь hh.ru + последний отчёт."""
+    session = _session()
+    queue = session.query(func.count(Vacancy.id)).filter(
+        Vacancy.is_primary == True,
+        Vacancy.contact_type == "hh",
+        Vacancy.status.in_([VacancyStatus.matched, VacancyStatus.drafted]),
+    ).scalar() or 0
+    session.close()
+
+    last = _HH_JOB.get("result")
+    if last is None:
+        try:
+            last = json.loads(Path("data/hh_apply_last.json").read_text(encoding="utf-8"))
+        except Exception:
+            last = None
+    return jsonify({
+        "running": _HH_JOB["running"],
+        "mode": _outreach_mode(),
+        "queue": queue,
+        "rate": _rate_status(),
+        "job": {k: _HH_JOB[k] for k in ("started_at", "mode", "limit", "error")},
+        "last": last,
+    })
+
+
+@app.route("/api/hh_apply/run", methods=["POST"])
+@_requires_auth
+def api_hh_apply_run():
+    """Запуск автоотклика на hh.ru в фоне.
+
+    body: {send: bool, limit: int, confirm: bool}
+      send=false (дефолт) — dry-run: hh.ru открывается, ничего не отправляется.
+      send=true           — боевой режим. В semi_auto требует confirm=true
+                            (кнопка в дашборде спрашивает подтверждение),
+                            в full_auto подтверждение не нужно.
+    Число отправок всё равно ограничено общей квотой OUTREACH_PER_HOUR/DAY.
+    """
+    import threading
+
+    data = request.get_json(silent=True) or {}
+    send = bool(data.get("send"))
+    confirm = bool(data.get("confirm"))
+    mode = _outreach_mode()
+
+    try:
+        limit = int(data.get("limit") or 0) or None
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "limit должен быть числом"}), 400
+
+    if _HH_JOB["running"]:
+        return jsonify({"ok": False, "error": "Прогон уже идёт"}), 409
+
+    if send and mode == OutreachMode.SEMI_AUTO.value and not confirm:
+        return jsonify({
+            "ok": False, "error": "confirm_required",
+            "message": "OUTREACH_MODE=semi_auto — отправка только с подтверждением",
+        }), 409
+
+    if send:
+        rate = _rate_status()
+        if rate["allowed_now"] <= 0:
+            return jsonify({
+                "ok": False, "error": "rate_limit",
+                "next_slot": rate["next_slot"], "rate": rate,
+            }), 429
+
+    from jobsignal.agents.hh_apply import HHApplyAgent
+    from jobsignal.config import get_config
+
+    _HH_JOB.update(running=True, error=None, result=None, limit=limit,
+                   mode="send" if send else "dry_run",
+                   started_at=datetime.now(timezone.utc).isoformat())
+
+    def _run():
+        try:
+            _HH_JOB["result"] = HHApplyAgent(
+                get_config(), dry_run=not send, limit=limit
+            ).run()
+        except Exception as exc:  # noqa: BLE001
+            log.exception("hh_apply run failed")
+            _HH_JOB["error"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            _HH_JOB["running"] = False
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({
+        "ok": True, "mode": _HH_JOB["mode"], "limit": limit,
+        "message": ("Отправляю отклики на hh.ru…" if send
+                    else "Проверяю очередь на hh.ru без отправки…"),
+    })
 
 
 # ── recruiters ────────────────────────────────────────────────────────────────

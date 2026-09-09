@@ -44,6 +44,29 @@ nav a.active{color:var(--accent2);}
 .rate-item{font-size:12px;text-align:center;}
 .rate-lbl{font-size:10px;color:var(--text2);}
 
+/* hh.ru автоотклик */
+.hh-panel{margin:0 20px 12px;background:var(--bg2);border:1px solid var(--border);
+  border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.hh-panel .hh-ttl{font-size:13px;font-weight:600;}
+.hh-panel .hh-meta{font-size:11px;color:var(--text2);}
+.hh-panel input[type=number]{background:var(--bg3);border:1px solid var(--border);
+  color:var(--text);border-radius:8px;padding:6px 8px;font-size:12px;width:64px;outline:none;}
+.hh-mode{font-size:10px;padding:2px 8px;border-radius:20px;border:1px solid var(--border);
+  color:var(--text2);text-transform:uppercase;letter-spacing:.4px;}
+.hh-mode.full{border-color:var(--amber);color:var(--amber);}
+#hh-status{font-size:11px;color:var(--text2);margin-left:auto;text-align:right;max-width:46%;}
+#hh-report{margin:0 20px 12px;display:none;background:var(--bg2);
+  border:1px solid var(--border);border-radius:8px;padding:10px 14px;}
+#hh-report table{width:100%;border-collapse:collapse;font-size:12px;}
+#hh-report th{text-align:left;font-size:10px;color:var(--text2);font-weight:500;
+  padding:4px 6px;border-bottom:1px solid var(--border);}
+#hh-report td{padding:5px 6px;border-bottom:1px solid var(--border);vertical-align:top;}
+#hh-report .r-ok{color:var(--green);}
+#hh-report .r-dry{color:var(--accent2);}
+#hh-report .r-bad{color:var(--amber);}
+#hh-report .letter{color:var(--text2);white-space:pre-wrap;font-size:11px;
+  max-height:64px;overflow:auto;}
+
 /* filters */
 .filters{padding:10px 20px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;
   border-bottom:1px solid var(--border);background:var(--bg2);position:sticky;top:0;z-index:10;}
@@ -166,6 +189,23 @@ textarea.draft:focus{border-color:var(--accent);}
   </div>
 </div>
 
+<div class="hh-panel">
+  <span class="hh-ttl">🤖 Автоотклик hh.ru</span>
+  <span class="hh-mode {{ 'full' if outreach_mode == 'full_auto' else '' }}"
+        title="OUTREACH_MODE в config/.env">{{ outreach_mode }}</span>
+  <span class="hh-meta">в очереди <b id="hh-queue">—</b></span>
+  <span class="hh-meta">бюджет прогона</span>
+  <input type="number" id="hh-limit" min="1" max="50" value="3"
+         title="Сколько вакансий открыть за прогон. Считается каждая открытая, включая ошибки.">
+  <button class="btn btn-ghost" id="hh-dry" onclick="runHHApply(false)">
+    👁 Проверить без отправки</button>
+  <button class="btn btn-primary" id="hh-send" onclick="runHHApply(true)">
+    🚀 Отправить</button>
+  <span id="hh-status"></span>
+</div>
+
+<div id="hh-report"></div>
+
 <div class="filters">
   <select id="f-profile" onchange="loadVacancies()">
     <option value="">Все профили</option>
@@ -272,6 +312,99 @@ async function runPipeline(){
     setTimeout(()=>{loadVacancies();loadStats();st.textContent='';},300000);
   }catch(e){st.textContent='✗ Ошибка';}
   setTimeout(()=>{btn.disabled=false;btn.innerHTML='🔄 Обновить';},15000);
+}
+
+// ── hh.ru автоотклик ──────────────────────────────────────────────────────────
+const OUTREACH_MODE = {{ outreach_mode|tojson }};
+let _hhPoll = null;
+
+async function loadHHStatus(){
+  try{
+    const d=await(await fetch('/api/hh_apply/status')).json();
+    document.getElementById('hh-queue').textContent=d.queue??'—';
+    const dry=document.getElementById('hh-dry'), send=document.getElementById('hh-send');
+    dry.disabled=send.disabled=d.running;
+    const allowed=d.rate?.allowed_now??0;
+    if(!d.running&&allowed<=0){
+      send.disabled=true;
+      send.title=`Лимит исчерпан${d.rate?.next_slot?`, слот ~${d.rate.next_slot}`:''}`;
+    }else{
+      send.title=`Отправит не больше ${allowed} — общая квота откликов`;
+    }
+    const st=document.getElementById('hh-status');
+    if(d.running){
+      st.innerHTML=`<span class="spinner"></span> ${d.job.mode==='send'?'отправляю':'проверяю'}…`;
+      if(!_hhPoll) _hhPoll=setInterval(loadHHStatus,4000);
+    }else{
+      if(_hhPoll){clearInterval(_hhPoll);_hhPoll=null;loadStats();loadVacancies();}
+      if(d.job.error) st.textContent='✗ '+d.job.error;
+      else if(d.last) st.textContent=hhSummary(d.last);
+      else st.textContent='';
+      if(d.last) renderHHReport(d.last);
+    }
+  }catch(e){}
+}
+
+function hhSummary(r){
+  if(r.error) return '✗ '+r.error;
+  const bits=[`${r.dry_run?'проверено':'отправлено'}: ${r.dry_run?r.attempted:r.applied}`,
+              `бюджет ${r.attempt_budget}`,`очередь ${r.queue_size}`];
+  if(r.stopped_reason) bits.push(r.stopped_reason);
+  return bits.join(' · ');
+}
+
+function hhResultClass(res){
+  if(res==='applied') return 'r-ok';
+  if(res==='dry_run') return 'r-dry';
+  return 'r-bad';
+}
+
+function renderHHReport(r){
+  const box=document.getElementById('hh-report');
+  const items=r.items||[];
+  if(!items.length){box.style.display='none';return;}
+  box.style.display='block';
+  box.innerHTML=`
+    <div style="font-size:12px;color:var(--text2);margin-bottom:6px">
+      Последний прогон — ${r.dry_run?'без отправки':'боевой'}
+      ${r.error?`<span style="color:var(--red)"> · ${r.error}</span>`:''}
+    </div>
+    <table><thead><tr>
+      <th>#</th><th>%</th><th>Вакансия</th><th>Итог</th><th>Письмо</th>
+    </tr></thead><tbody>
+    ${items.map(it=>`<tr>
+      <td><a href="${it.url}" target="_blank">${it.vacancy_id}</a></td>
+      <td>${it.score}</td>
+      <td>${it.role}<div class="hh-meta">${it.company}</div></td>
+      <td class="${hhResultClass(it.result)}">${it.result}
+        ${it.detail?`<div class="hh-meta">${it.detail}</div>`:''}</td>
+      <td><div class="letter">${(it.letter||'').replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</div></td>
+    </tr>`).join('')}
+    </tbody></table>`;
+}
+
+async function runHHApply(send){
+  const limit=parseInt(document.getElementById('hh-limit').value)||null;
+  const body={send:send,limit:limit};
+  if(send&&OUTREACH_MODE==='semi_auto'){
+    if(!confirm(`Режим semi_auto.\n\nОтправить реальные отклики на hh.ru?\n`+
+                `Бюджет прогона: ${limit} вакансий, но не больше общей квоты откликов.`)) return;
+    body.confirm=true;
+  }
+  const st=document.getElementById('hh-status');
+  st.innerHTML='<span class="spinner"></span> запускаю…';
+  try{
+    const r=await fetch('/api/hh_apply/run',{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(!d.ok){
+      if(d.error==='rate_limit'){st.textContent=`Лимит исчерпан. Слот: ${d.next_slot||'—'}`;}
+      else{st.textContent='✗ '+(d.message||d.error||'ошибка');}
+      return;
+    }
+    st.innerHTML='<span class="spinner"></span> '+d.message;
+    loadHHStatus();
+  }catch(e){st.textContent='✗ Ошибка запуска';}
 }
 
 // ── vacancies ─────────────────────────────────────────────────────────────────
@@ -461,7 +594,9 @@ async function hideCard(id){
 
 loadStats();
 loadVacancies();
+loadHHStatus();
 setInterval(loadStats,60000);
+setInterval(loadHHStatus,60000);
 </script>
 </body>
 </html>

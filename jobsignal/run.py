@@ -16,6 +16,7 @@ COMMANDS = (
     "initdb", "seed-channels", "collect", "posts",
     "parse", "dedup", "match", "compose",
     "hh-collect", "find-channels",          # NEW: search tgstat/telemetr
+    "hh-apply", "hh-preview",                # NEW: автоотклик на hh.ru
     "channels",               # NEW: list channels
     "pipeline", "status", "dashboard", "serve",
 )
@@ -108,6 +109,68 @@ def main():
         from jobsignal.agents.hh_collector import HHCollector
         result = HHCollector().run()
         logging.info("hh сбор: %s", result)
+
+    elif cmd in ("hh-apply", "hh-preview"):
+        """Автоотклик на hh.ru.
+
+        hh-preview            — очередь и письма, hh.ru не открывается
+        hh-apply              — DRY-RUN: открывает вакансии, ничего не отправляет
+        hh-apply --send       — боевой режим (в пределах OUTREACH_PER_HOUR/DAY)
+        --limit N             — бюджет прогона: сколько вакансий вообще открыть
+        --show                — печатать письма целиком
+        """
+        import argparse
+        ap = argparse.ArgumentParser(prog=f"run.py {cmd}")
+        ap.add_argument("--limit", type=int, default=None)
+        ap.add_argument("--send", action="store_true",
+                        help="реально отправлять отклики (без флага — dry-run)")
+        ap.add_argument("--show", action="store_true", help="печатать письма целиком")
+        ap.add_argument("--headed", action="store_true", help="показать браузер")
+        opts = ap.parse_args(sys.argv[2:])
+
+        from jobsignal.config import get_config
+        cfg = get_config()
+
+        if cmd == "hh-preview":
+            from jobsignal.agents.hh_apply import preview
+            result = preview(cfg, limit=opts.limit)
+        else:
+            from jobsignal.agents.hh_apply import HHApplyAgent
+            result = HHApplyAgent(
+                cfg, dry_run=not opts.send, limit=opts.limit,
+                headless=not opts.headed,
+            ).run()
+
+        rate = result.get("rate", {})
+        print()
+        print(f"Очередь hh.ru: {result['queue_size']} вакансий")
+        print(f"Лимиты: за час {rate.get('sent_hour')}/{rate.get('per_hour')}, "
+              f"за сутки {rate.get('sent_day')}/{rate.get('per_day')}, "
+              f"можно сейчас: {rate.get('allowed_now')}")
+        if "attempt_budget" in result:
+            print(f"Бюджет прогона: {result['attempt_budget']} вакансий | "
+                  f"режим: {'DRY-RUN' if result['dry_run'] else 'БОЕВОЙ'}")
+            print(f"Обработано: {result['attempted']} | отправлено: {result['applied']} | "
+                  f"итоги: {result['by_result']}")
+        if result.get("stopped_reason"):
+            print(f"Остановка: {result['stopped_reason']}")
+        if result.get("error"):
+            print(f"ОШИБКА: {result['error']}")
+        print("-" * 78)
+        for it in result["items"]:
+            vid = it.get("id", it.get("vacancy_id"))
+            print(f"#{str(vid):<5} {it['score']:>3}%  {it['role']} — {it['company']}")
+            print(f"       {it['url']}   [{it.get('profile') or '—'}]"
+                  f"{'  → ' + it['result'] if it.get('result') else ''}")
+            if it.get("detail"):
+                print(f"       {it['detail']}")
+            letter = it.get("letter") or ""
+            if opts.show:
+                print("       " + "\n       ".join(letter.splitlines()))
+            else:
+                first = (letter.splitlines() or [""])[0]
+                print(f"       письмо ({len(letter)} симв.): {first[:90]}…")
+            print()
 
     elif cmd == "find-channels":
         """Search tgstat/telemetr for new channels."""
