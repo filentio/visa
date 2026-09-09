@@ -73,7 +73,13 @@ def generate_draft(vacancy: Vacancy, profile_name: str, cv_text: str, model: str
         f"Описание: {vacancy.description or '—'}\n\n"
         f"МОЙ ПРОФИЛЬ — {profile_name}:\n{cv_text[:CV_CAP]}"
     )
-    return complete_text(_system_for(style), user, model=model, max_tokens=400,
+    # max_tokens — предохранитель от обрыва, а не бюджет: платим за реально
+    # сгенерированные токены, поэтому запас ничего не стоит. На 400 обрывов
+    # ещё не было (11 писем в базе: 148-326 симв.), но кириллица идёт ~1 символ
+    # на токен, и потолок был в паре десятков токенов от самого длинного
+    # письма. Длину держит промпт («ровно 3-4 строки»), а не лимит —
+    # поднимаем до 2000, как в notify_bot, чтобы убрать риск совсем.
+    return complete_text(_system_for(style), user, model=model, max_tokens=2000,
                          tag=f"vac#{vacancy.id}", cache_system=True).strip()
 
 

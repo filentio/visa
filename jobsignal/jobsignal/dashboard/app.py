@@ -309,6 +309,13 @@ def api_mark_applied(vid):
         session.close()
         return jsonify({"error": "not found"}), 404
     v.status = VacancyStatus.applied
+    # Черновик, который дашборд показывал в момент нажатия. Отклик подавал
+    # пользователь руками, поэтому канал — manual, а не tg: иначе ручные
+    # отметки неотличимы от писем, отправленных системой, и конверсия
+    # считается по выборке, в которой система ничего не отправляла.
+    # Раньше сюда писалась пустая строка — 65 таких строк в базе, и по ним
+    # уже не восстановить, что именно ушло рекрутёру.
+    draft = (v.draft_text or "").strip()
     session.commit()
     session.close()
     try:
@@ -316,7 +323,7 @@ def api_mark_applied(vid):
         conn = _sq.connect("data/jobsignal.db")
         conn.execute(
             "INSERT OR IGNORE INTO applications (vacancy_id, message_text, channel, is_draft, sent_at, created_at) VALUES (?,?,?,?,datetime(\'now\'),datetime(\'now\'))",
-            (vid, "", "tg", 0)
+            (vid, draft, "manual", 0)
         )
         conn.commit()
         conn.close()

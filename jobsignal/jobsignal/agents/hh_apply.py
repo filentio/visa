@@ -70,6 +70,12 @@ FORBIDDEN_GIVE_UP = 3
 # Сколько 403 подряд без единой прочитанной страницы считать общим блоком hh,
 # а не свойством вакансий, и останавливать прогон.
 FORBIDDEN_ABORT = 5
+# Сколько прогонов терпеть отсутствие кнопки «Откликнуться». В отличие от
+# needs_manual это не приговор: кнопки может не быть из-за недогруженной
+# вёрстки или подвисшего рендера, и на следующем прогоне она появляется.
+# Но если её нет столько раз подряд — вакансия закрыта для откликов, и дальше
+# она только жжёт бюджет попыток.
+NO_RESPOND_GIVE_UP = 3
 
 SEL = {
     "already_applied": (
@@ -262,8 +268,17 @@ class Result(str, enum.Enum):
 
     @property
     def drops_vacancy(self) -> bool:
-        """Отклик невозможен и это не изменится — из очереди можно убрать."""
-        return self in (Result.ARCHIVED, Result.GONE, Result.NOT_ALLOWED)
+        """Отклик невозможен и это не изменится — из очереди можно убрать.
+
+        NEEDS_MANUAL сюда же: анкета работодателя — свойство самой вакансии,
+        повтором оно не лечится. Без этого вакансия оставалась drafted и
+        занимала слот в КАЖДОМ прогоне: #1096 успела съесть 7 попыток, #5426 — 5,
+        и обе так и не могли быть отправлены. Вакансия не теряется — статус
+        skipped прячет её только из фильтра «в работе», причина лежит в
+        hh_apply_attempts, откликнуться руками по-прежнему можно.
+        """
+        return (self in (Result.ARCHIVED, Result.GONE, Result.NOT_ALLOWED,
+                         Result.NEEDS_MANUAL))
 
 
 @dataclass
@@ -623,21 +638,40 @@ class HHApplyAgent(BaseAgent):
         elif attempt.result is Result.FORBIDDEN:
             # Закрытая страница не лечится повтором: если hh отдаёт 403 уже
             # FORBIDDEN_GIVE_UP прогонов подряд, вакансия только тратит бюджет.
-            seen = session.execute(
-                sql_text(
-                    "SELECT count(*) FROM hh_apply_attempts "
-                    "WHERE vacancy_id = :vid AND result = :res"
-                ),
-                {"vid": attempt.vacancy_id, "res": Result.FORBIDDEN.value},
-            ).scalar() or 0
+            # _page_read обязателен: пока за прогон не прочитано ни одной
+            # страницы, 403 говорит о блоке hh целиком, а не об этой вакансии.
+            seen = self._seen_with_result(session, attempt.vacancy_id, Result.FORBIDDEN)
             if seen >= FORBIDDEN_GIVE_UP and self._page_read:
                 self._set_status(session, attempt, VacancyStatus.skipped)
                 log.warning(
                     "[hh_apply] #%s: hh закрыл страницу %d раз — убираю из очереди",
                     attempt.vacancy_id, seen,
                 )
+        elif attempt.result is Result.NO_RESPOND_BUTTON:
+            # Тот же ограниченный ретрай, что и для 403, но без оглядки на
+            # _page_read: этот исход сам по себе означает, что страница
+            # прочитана — кнопку искали именно на ней.
+            seen = self._seen_with_result(
+                session, attempt.vacancy_id, Result.NO_RESPOND_BUTTON)
+            if seen >= NO_RESPOND_GIVE_UP:
+                self._set_status(session, attempt, VacancyStatus.skipped)
+                log.warning(
+                    "[hh_apply] #%s: кнопки «Откликнуться» нет %d раз — "
+                    "убираю из очереди", attempt.vacancy_id, seen,
+                )
 
         session.commit()
+
+    def _seen_with_result(self, session, vacancy_id: int, result: Result) -> int:
+        """Сколько раз эта вакансия уже получала такой исход, включая текущий:
+        _record пишет попытку в журнал до того, как считает её здесь."""
+        return session.execute(
+            sql_text(
+                "SELECT count(*) FROM hh_apply_attempts "
+                "WHERE vacancy_id = :vid AND result = :res"
+            ),
+            {"vid": vacancy_id, "res": result.value},
+        ).scalar() or 0
 
     def _set_status(self, session, attempt: Attempt, status: VacancyStatus) -> None:
         """Статус вакансии — сразу всем строкам БД про эту же вакансию hh.
