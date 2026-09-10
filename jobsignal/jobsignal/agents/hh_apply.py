@@ -729,6 +729,42 @@ class HHApplyAgent(BaseAgent):
 
         session.commit()
 
+    def _notify_sent(self, attempt: Attempt) -> None:
+        """Сказать в телеграм, что отклик ушёл: вакансия, компания, оценка,
+        профиль, ссылка.
+
+        В full_auto отправку никто не подтверждает, и без этого сообщения
+        узнать, что именно ушло, можно только заглянув в дашборд. Сбой
+        телеграма прогон не роняет и попытку не отменяет: отклик на hh уже
+        существует, и терять из-за недоставленного сообщения остаток очереди
+        нельзя — в журнале останется предупреждение.
+        """
+        from .notify_bot import _esc, _send
+
+        letter = ("письмо приложено" if attempt.result is Result.APPLIED
+                  else "без письма — hh отправил отклик на клике")
+        text = (
+            "📤 <b>Отклик отправлен</b>\n"
+            f"{_esc(attempt.role)} — {_esc(attempt.company)}\n"
+            f"Оценка: {attempt.score}% · профиль: {_esc(attempt.profile or '—')}\n"
+            f"{letter}\n"
+            f"{_esc(attempt.url)}"
+        )
+        try:
+            message_id = _send(text)
+        except Exception as exc:  # noqa: BLE001 — телеграм не важнее отклика
+            log.warning("[hh_apply] #%s: сообщение в телеграм не отправилось: "
+                        "%s", attempt.vacancy_id, exc)
+            return
+        if message_id is None:
+            log.warning("[hh_apply] #%s: отклик ушёл, а сообщение в телеграм "
+                        "— нет", attempt.vacancy_id)
+        else:
+            # Успех тоже в журнал: иначе «поток» в телеграме проверяется
+            # только по отсутствию предупреждения.
+            log.info("[hh_apply] #%s: сообщение в телеграм отправлено (id %s)",
+                     attempt.vacancy_id, message_id)
+
     def _seen_with_result(self, session, vacancy_id: int, result: Result) -> int:
         """Сколько раз эта вакансия уже получала такой исход, включая текущий:
         _record пишет попытку в журнал до того, как считает её здесь."""
@@ -878,6 +914,11 @@ class HHApplyAgent(BaseAgent):
 
                     report.attempts.append(attempt)
                     self._record(session, attempt)
+                    # Только после _record: сообщать об отклике, который не
+                    # записан в базу, значило бы обещать то, чего в отчётах и
+                    # квоте нет.
+                    if attempt.result.sent and not self.dry_run:
+                        self._notify_sent(attempt)
 
                     if attempt.result is Result.FORBIDDEN and not self._page_read:
                         forbidden_streak += 1
