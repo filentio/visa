@@ -80,6 +80,32 @@ FORBIDDEN_ABORT = 5
 # она только жжёт бюджет попыток.
 NO_RESPOND_GIVE_UP = 3
 
+# Собственный суточный лимит hh: «В течение одного дня вы можете отправить не
+# более 200 откликов» (База знаний hh.ru, статья 1618). Наши OUTREACH_PER_DAY
+# держатся заведомо ниже, так что в норме упереться в него мы не должны —
+# это страховка на случай, когда отклики уходили ещё и руками или лимит
+# окажется ниже заявленного.
+#
+# Точную формулировку страницы при исчерпании лимита проверить не на чем: для
+# этого нужно отправить 200 откликов. Поэтому ищем не один текст, а несколько
+# вариантов — и делаем это ТОЛЬКО там, где иначе поставили бы неверный
+# диагноз («кнопки нет», «поле письма не найдено», «отправка не
+# подтвердилась»). Ложное срабатывание стоит одного остановленного прогона,
+# пропущенное — того, что прогон будет считать закрытыми вакансии, которые
+# просто не приняли из-за лимита.
+LIMIT_MARKERS = (
+    "лимит отклик",
+    "лимита отклик",
+    "лимит на отклик",
+    "израсходовали лимит",
+    "исчерпан лимит",
+    "исчерпали лимит",
+    "превышен лимит",
+    "достигли лимита",
+    "не более 200 отклик",
+    "слишком много отклик",
+)
+
 SEL = {
     "already_applied": (
         '[data-qa="vacancy-response-link-view-topic"], '
@@ -249,6 +275,7 @@ class Result(str, enum.Enum):
     NEEDS_MANUAL = "needs_manual"          # анкета работодателя — руками
     ARCHIVED = "archived"                  # вакансия снята
     NO_LETTER = "no_letter"                # письмо не удалось получить
+    LIMIT_REACHED = "limit_reached"        # hh не принимает: свой суточный лимит
     NO_LETTER_FIELD = "no_letter_field"
     NO_SUBMIT = "no_submit"
     UNCONFIRMED = "unconfirmed"            # submit нажат, подтверждения нет
@@ -739,31 +766,54 @@ class HHApplyAgent(BaseAgent):
         существует, и терять из-за недоставленного сообщения остаток очереди
         нельзя — в журнале останется предупреждение.
         """
-        from .notify_bot import _esc, _send
+        from .notify_bot import _esc
 
         letter = ("письмо приложено" if attempt.result is Result.APPLIED
                   else "без письма — hh отправил отклик на клике")
-        text = (
+        self._notify(
             "📤 <b>Отклик отправлен</b>\n"
             f"{_esc(attempt.role)} — {_esc(attempt.company)}\n"
             f"Оценка: {attempt.score}% · профиль: {_esc(attempt.profile or '—')}\n"
             f"{letter}\n"
-            f"{_esc(attempt.url)}"
+            f"{_esc(attempt.url)}",
+            about=f"#{attempt.vacancy_id}",
         )
+
+    def _notify_limit(self, attempt: Attempt, sent_this_run: int) -> None:
+        """Сказать, что дальше отправлять некуда: у hh кончился свой лимит.
+
+        Без этого сообщения автоматический режим просто замолчал бы до
+        следующего дня, а по журналу это выглядело бы как «прогон прошёл, ноль
+        отправок» — то есть как поломка, которую никто не заметил.
+        """
+        from .notify_bot import _esc
+
+        self._notify(
+            "⏸ <b>hh больше не принимает отклики сегодня</b>\n"
+            f"Сработал суточный лимит самого hh: {_esc(attempt.detail)}\n"
+            f"За этот прогон ушло: {sent_this_run}. Остаток очереди никуда не "
+            "пропал — вернёмся к нему, когда лимит обновится.\n"
+            f"Последняя вакансия: {_esc(attempt.url)}",
+            about=f"#{attempt.vacancy_id}",
+        )
+
+    def _notify(self, text: str, about: str) -> None:
+        """Отправить сообщение в телеграм. Сбой телеграма прогон не роняет."""
+        from .notify_bot import _send
+
         try:
             message_id = _send(text)
         except Exception as exc:  # noqa: BLE001 — телеграм не важнее отклика
-            log.warning("[hh_apply] #%s: сообщение в телеграм не отправилось: "
-                        "%s", attempt.vacancy_id, exc)
+            log.warning("[hh_apply] %s: сообщение в телеграм не отправилось: "
+                        "%s", about, exc)
             return
         if message_id is None:
-            log.warning("[hh_apply] #%s: отклик ушёл, а сообщение в телеграм "
-                        "— нет", attempt.vacancy_id)
+            log.warning("[hh_apply] %s: сообщение в телеграм не ушло", about)
         else:
             # Успех тоже в журнал: иначе «поток» в телеграме проверяется
             # только по отсутствию предупреждения.
-            log.info("[hh_apply] #%s: сообщение в телеграм отправлено (id %s)",
-                     attempt.vacancy_id, message_id)
+            log.info("[hh_apply] %s: сообщение в телеграм отправлено (id %s)",
+                     about, message_id)
 
     def _seen_with_result(self, session, vacancy_id: int, result: Result) -> int:
         """Сколько раз эта вакансия уже получала такой исход, включая текущий:
@@ -919,6 +969,21 @@ class HHApplyAgent(BaseAgent):
                     # квоте нет.
                     if attempt.result.sent and not self.dry_run:
                         self._notify_sent(attempt)
+
+                    if attempt.result is Result.LIMIT_REACHED:
+                        # Лимит, а не поломка: очередь цела, вакансия остаётся
+                        # в работе, код возврата нулевой, тревога не уходит.
+                        # Продолжать прогон нечем — hh не примет и следующую,
+                        # а каждая попытка стоит письма от модели.
+                        report.stopped_reason = (
+                            "hh не принимает отклики: сработал его собственный "
+                            f"суточный лимит — {attempt.detail}. Это лимит, а "
+                            "не сбой: очередь осталась как есть, вернёмся к ней "
+                            "после обновления лимита"
+                        )
+                        log.warning("[hh_apply] %s", report.stopped_reason)
+                        self._notify_limit(attempt, report.applied)
+                        break
 
                     if attempt.result is Result.FORBIDDEN and not self._page_read:
                         forbidden_streak += 1
@@ -1129,6 +1194,13 @@ class HHApplyAgent(BaseAgent):
                     Result.NOT_ALLOWED if permanent else Result.FORBIDDEN,
                     detail, await self._screenshot(vid, "forbidden"),
                 )
+            # Кнопки может не быть и потому, что hh больше не принимает
+            # отклики: тогда это не свойство вакансии, и вычёркивать её из
+            # очереди после NO_RESPOND_GIVE_UP прогонов нельзя.
+            notice = await self._limit_notice(page)
+            if notice:
+                return self._attempt(item, "", Result.LIMIT_REACHED, notice,
+                                     await self._screenshot(vid, "limit"))
             # Скриншот нужен и в dry-run: без него причина не восстанавливается.
             return self._attempt(item, "", Result.NO_RESPOND_BUTTON,
                                  "кнопка отклика не найдена",
@@ -1191,6 +1263,30 @@ class HHApplyAgent(BaseAgent):
             return False
         return bool(ARCHIVED_TEXT_RE.search(title))
 
+    async def _limit_notice(self, page) -> str:
+        """Текст про исчерпанный лимит откликов на странице — или пустая строка.
+
+        Вызывается только там, где иначе прогон поставил бы диагноз самой
+        вакансии («кнопки нет», «поля письма нет», «отправка не
+        подтвердилась»). Ложное срабатывание останавливает прогон — это
+        безопасная сторона: очередь остаётся целой. Пропущенный лимит хуже:
+        прогон вычеркнет из очереди вакансии, которые просто не приняли.
+        """
+        try:
+            body = await page.inner_text("body")
+        except Exception:  # noqa: BLE001 — нет текста, значит и вывода нет
+            return ""
+        low = " ".join(body.split()).lower()
+        for marker in LIMIT_MARKERS:
+            pos = low.find(marker)
+            if pos < 0:
+                continue
+            # Фразу возвращаем целиком: она попадёт в отчёт, журнал и телеграм,
+            # и по ней будет видно, что именно сказал hh.
+            start, end = max(0, pos - 60), min(len(low), pos + 120)
+            return f"hh на странице: «…{low[start:end].strip()}…»"
+        return ""
+
     async def _submit(self, page, item: dict, letter: str, button) -> Attempt:
         vid = item["id"]
         await button.click()
@@ -1238,6 +1334,10 @@ class HHApplyAgent(BaseAgent):
             if await self._visible(page, SEL["already_applied"], timeout=1.5):
                 return await self._applied_before_letter(
                     page, item, letter, "пока искалось поле письма")
+            notice = await self._limit_notice(page)
+            if notice:
+                return self._attempt(item, letter, Result.LIMIT_REACHED, notice,
+                                     await self._screenshot(vid, "limit"))
             return self._attempt(item, letter, Result.NO_LETTER_FIELD,
                                  "поле сопроводительного письма не найдено",
                                  await self._screenshot(vid, "no-letter-field"))
@@ -1254,6 +1354,13 @@ class HHApplyAgent(BaseAgent):
 
         if await self._confirmed(page):
             return self._attempt(item, letter, Result.APPLIED, "отклик отправлен")
+        # Подтверждения нет — возможно, hh отказал по своему лимиту, а не
+        # потерял отправку. Разница принципиальная: во втором случае отклик
+        # мог уйти, в первом его точно нет.
+        notice = await self._limit_notice(page)
+        if notice:
+            return self._attempt(item, letter, Result.LIMIT_REACHED, notice,
+                                 await self._screenshot(vid, "limit"))
         return self._attempt(item, letter, Result.UNCONFIRMED,
                              "не удалось подтвердить отправку",
                              await self._screenshot(vid, "unconfirmed"))
