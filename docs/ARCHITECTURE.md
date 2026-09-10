@@ -173,9 +173,24 @@ CollectorAgent → ParserAgent → DeduplicatorAgent → MatcherAgent
 
 | | Путь на европейском сервере |
 |---|---|
-| jobsignal | `/opt/jobsignal_local`, venv `.venv`, база `data/jobsignal.db` |
-| autoapply | `/root/autoapply`, venv `/opt/jobparser/venv` |
+| **клон репозитория** | `/root/visa` — сюда коммитим |
+| **деплой jobsignal** | `/opt/jobsignal_local` — отсюда запускается, git там нет |
+| база | `/opt/jobsignal_local/data/jobsignal.db`, в git не версионируется |
 | дашборд | порт 5000, наружу закрыт ufw, доступ через SSH-туннель |
+| `/root/autoapply`, `/opt/jobparser` | старое, не используется — логика перенесена в `agents/hh_apply.py` |
+
+**Репозиторий и деплой — разные каталоги с разной структурой.** Соответствие:
+
+```
+/opt/jobsignal_local/jobsignal/llm.py  ↔  /root/visa/jobsignal/jobsignal/llm.py
+/opt/jobsignal_local/run.py            ↔  /root/visa/jobsignal/run.py
+```
+
+То есть весь деплой соответствует подкаталогу `jobsignal/` в репозитории.
+`git init` в деплое делать не надо: структура не совпадёт, а `config/.env`,
+`data/` и резюме там лежат рядом с кодом.
+
+Правки делаются в деплое, потом копируются в клон и коммитятся оттуда.
 
 Запуск дашборда: `tmux new -s dash`, внутри
 `cd /opt/jobsignal_local && .venv/bin/python run.py serve`.
