@@ -92,7 +92,16 @@ SEL = {
         '[data-qa="vacancy-response-link-top"], '
         '[data-qa="vacancy-response-link-bottom"]'
     ),
-    "relocation_confirm": '[data-qa="vacancy-response-popup-relocation-warning-confirmation"]',
+    # Модалка «Вы откликаетесь из другой страны» (сервер европейский, поэтому
+    # она встаёт почти на каждой вакансии). data-qa был вымышленным: на живой
+    # странице кнопка — relocation-warning-confirm. Из-за этого подтверждение
+    # не нажималось, модалка перекрывала форму, поле письма не находилось и
+    # прогон уходил в no_letter_field, то есть отклик не отправлялся вообще.
+    # Старый селектор оставлен запасным на случай возврата прежней вёрстки.
+    "relocation_confirm": (
+        '[data-qa="relocation-warning-confirm"], '
+        '[data-qa="vacancy-response-popup-relocation-warning-confirmation"]'
+    ),
     "letter_toggle": (
         '[data-qa="vacancy-response-letter-toggle"], '
         '[data-qa="add-cover-letter"]'
