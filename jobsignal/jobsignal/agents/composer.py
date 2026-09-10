@@ -113,7 +113,7 @@ class ComposerAgent(BaseAgent):
             vacs = (
                 s.execute(
                     select(Vacancy)
-                    .where(Vacancy.status == VacancyStatus.MATCHED,
+                    .where(Vacancy.status == VacancyStatus.matched,
                            Vacancy.recruiter_handle.is_not(None),
                            Vacancy.is_primary.is_(True))
                     .limit(limit)
@@ -138,7 +138,7 @@ class ComposerAgent(BaseAgent):
                 # ещё никуда не ушёл и квоту не занимает.
                 s.add(Application(vacancy_id=v.id, message_text=text,
                                   channel="telegram", is_draft=True))
-                v.status = VacancyStatus.DRAFTED
+                v.status = VacancyStatus.drafted
                 made += 1
             s.commit()
         log.info("[composer] черновиков создано: %d, ошибок: %d", made, errors)
