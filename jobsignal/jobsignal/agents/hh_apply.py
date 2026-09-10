@@ -102,6 +102,10 @@ SEL = {
         '[data-qa="relocation-warning-confirm"], '
         '[data-qa="vacancy-response-popup-relocation-warning-confirmation"]'
     ),
+    # Ссылка на странице успешного отклика: hh сам предлагает приложить письмо
+    # к уже созданному отклику. Тот же data-qa участвует в already_applied как
+    # признак «отклик ушёл» — здесь он нужен как кнопка.
+    "attach_letter": '[data-qa="responded-success-attach-cover-letter"]',
     "letter_toggle": (
         '[data-qa="vacancy-response-letter-toggle"], '
         '[data-qa="add-cover-letter"]'
@@ -651,6 +655,23 @@ class HHApplyAgent(BaseAgent):
                         "now": now,
                     },
                 )
+            elif attempt.result is Result.APPLIED and attempt.letter:
+                # Письмо дописано в отклик, который раньше ушёл пустым
+                # (applied_no_letter). Второй строки быть не может — её
+                # запрещает ux_applications_sent_vacancy, — поэтому
+                # заполняем текст в существующей, но только если он пуст:
+                # затирать уже отправленное письмо нечем и незачем.
+                updated = session.execute(
+                    sql_text(
+                        "UPDATE applications SET message_text = :text "
+                        "WHERE vacancy_id = :vid AND sent_at IS NOT NULL "
+                        "AND (message_text IS NULL OR message_text = '')"
+                    ),
+                    {"vid": attempt.vacancy_id, "text": attempt.letter},
+                ).rowcount
+                if updated:
+                    log.info("[hh_apply] вакансия #%s: письмо дописано в "
+                             "существующий отклик", attempt.vacancy_id)
             else:
                 log.warning(
                     "[hh_apply] вакансия #%s: отправленный отклик уже есть, "
@@ -1117,12 +1138,8 @@ class HHApplyAgent(BaseAgent):
         # поля письма, иначе состоявшаяся отправка уходит в отчёт как
         # «поле письма не найдено», то есть как будто ничего не произошло.
         if await self._visible(page, SEL["already_applied"], timeout=2):
-            return self._attempt(
-                item, letter, Result.APPLIED_NO_LETTER,
-                "hh отправил отклик сразу на клике, до поля письма — "
-                "письмо НЕ приложено, его нужно дописать в отклике вручную",
-                await self._screenshot(vid, "applied-no-letter"),
-            )
+            return await self._applied_before_letter(
+                page, item, letter, "до поля письма")
 
         # hh может предупредить о другом регионе — подтверждаем.
         relocation = await self._visible(page, SEL["relocation_confirm"], timeout=2)
@@ -1155,12 +1172,8 @@ class HHApplyAgent(BaseAgent):
         if letter_input is None:
             # Ещё одна сверка: hh мог отправить отклик пока мы искали поле.
             if await self._visible(page, SEL["already_applied"], timeout=1.5):
-                return self._attempt(
-                    item, letter, Result.APPLIED_NO_LETTER,
-                    "отклик ушёл без письма, пока искалось поле письма — "
-                    "письмо нужно дописать в отклике вручную",
-                    await self._screenshot(vid, "applied-no-letter"),
-                )
+                return await self._applied_before_letter(
+                    page, item, letter, "пока искалось поле письма")
             return self._attempt(item, letter, Result.NO_LETTER_FIELD,
                                  "поле сопроводительного письма не найдено",
                                  await self._screenshot(vid, "no-letter-field"))
@@ -1180,6 +1193,61 @@ class HHApplyAgent(BaseAgent):
         return self._attempt(item, letter, Result.UNCONFIRMED,
                              "не удалось подтвердить отправку",
                              await self._screenshot(vid, "unconfirmed"))
+
+    async def _attach_letter(self, page, item: dict, letter: str) -> bool:
+        """Дописать письмо в уже созданный отклик и подтвердить отправку.
+
+        У вакансий без анкеты hh отправляет отклик сразу на «Откликнуться», а
+        письмо предлагает приложить после — ссылкой «Приложить сопроводительное
+        письмо» на странице успеха. Без этого шага результат нулевой при
+        сделанной работе: отклик есть, работодатель видит одно резюме.
+        """
+        from playwright.async_api import TimeoutError as PWTimeout
+
+        attach = await self._visible(page, SEL["attach_letter"], timeout=4)
+        if attach is None:
+            return False
+        await attach.click()
+
+        letter_input = await self._visible(page, SEL["letter_input"], timeout=6)
+        if letter_input is None:
+            letter_input = await self._visible(page, SEL["letter_input_any"], timeout=3)
+        if letter_input is None:
+            return False
+        await letter_input.fill(letter)
+
+        submit = await self._visible(page, SEL["submit"], timeout=4)
+        if submit is None:
+            return False
+        await submit.click()
+
+        # Подтверждение только по исчезновению поля: маркер already_applied
+        # здесь бесполезен, он висит на странице с самого момента отклика и
+        # подтвердил бы отправку письма, которого не было.
+        try:
+            await page.locator(SEL["letter_input"]).first.wait_for(
+                state="hidden", timeout=8000
+            )
+            return True
+        except PWTimeout:
+            return False
+
+    async def _applied_before_letter(self, page, item: dict, letter: str,
+                                     where: str) -> Attempt:
+        """Отклик уже ушёл от клика — пробуем дописать письмо в него."""
+        if await self._attach_letter(page, item, letter):
+            return self._attempt(
+                item, letter, Result.APPLIED,
+                f"hh отправил отклик сразу на клике ({where}), "
+                f"письмо дописано в отклик",
+                await self._screenshot(item["id"], "applied-letter-attached"),
+            )
+        return self._attempt(
+            item, letter, Result.APPLIED_NO_LETTER,
+            f"отклик ушёл без письма ({where}), дописать не удалось — "
+            f"письмо нужно приложить в отклике вручную",
+            await self._screenshot(item["id"], "applied-no-letter"),
+        )
 
     async def _confirmed(self, page) -> bool:
         """Успех: появился маркер отклика либо исчезла форма письма."""
