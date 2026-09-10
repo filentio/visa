@@ -51,6 +51,12 @@ class RawPost(Base):
     post_url = Column(String)
     posted_at = Column(DateTime)
     parsed = Column(Boolean, default=False)
+    # Счётчик неудачных разборов. parsed при сбое ставить нельзя — пост тогда
+    # выбывает из очереди навсегда (так потерялись 7875, 7958, 7973, 7975), а
+    # без счётчика битый пост крутился бы в каждом прогоне. Выборка парсера
+    # отсекает посты, исчерпавшие попытки: parsed=0 у них остаётся честным
+    # признаком «не разобран».
+    parse_attempts = Column(Integer, nullable=False, default=0)
     channel = relationship("Channel", back_populates="raw_posts")
     __table_args__ = (UniqueConstraint("channel_id", "tg_message_id"),)
 

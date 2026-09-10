@@ -253,6 +253,74 @@ def _loads_lenient(text: str) -> dict:
     raise json.JSONDecodeError("не удалось распарсить", t, 0)
 
 
+def _iter_top_level_objects(text: str):
+    """Куски «{...}» верхнего уровня, с учётом строк и экранирования.
+
+    Нужен, когда массив обрезан по лимиту токенов и целиком не парсится:
+    берём объекты, которые успели закрыться, а незавершённый хвост
+    отбрасываем — достраивать его значило бы выдумывать поля.
+    """
+    depth = 0
+    start = None
+    in_str = False
+    esc = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}" and depth:
+            depth -= 1
+            if depth == 0 and start is not None:
+                yield text[start:i + 1]
+                start = None
+
+
+def _loads_lenient_many(text: str) -> list[dict]:
+    """Ответ модели как СПИСОК объектов: и один объект, и массив.
+
+    Парсер просит один объект, но на посте с несколькими вакансиями модель
+    возвращает массив. _loads_lenient на нём падает: он режет от первой «{»
+    до последней «}» и получает «{...},{...}» — невалидный JSON. Такие посты
+    уходили в skipped и помечались разобранными, то есть терялись насовсем.
+    """
+    t = _strip_fences(text).strip()
+    if not t.startswith("["):
+        return [_loads_lenient(t)]
+
+    try:
+        data = json.loads(t)
+    except json.JSONDecodeError:
+        pass
+    else:
+        if isinstance(data, list):
+            return [d for d in data if isinstance(d, dict)]
+
+    objs: list[dict] = []
+    for block in _iter_top_level_objects(t):
+        for candidate in (block, _repair_json(block)):
+            try:
+                obj = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict):
+                objs.append(obj)
+            break
+    if objs:
+        return objs
+    raise json.JSONDecodeError("массив без пригодных объектов", t, 0)
+
+
 def _raw(system, user, model, max_tokens, as_json, tag="", cache_system=False):
     provider = get_config().settings.llm_provider
     if provider == "ollama":

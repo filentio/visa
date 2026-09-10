@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 from typing import Optional
@@ -128,11 +129,28 @@ SYSTEM = """Ты парсер вакансий. Извлекай поля из �
 - description: краткое описание обязанностей (1-2 предложения) или null
 - is_vacancy: true если это объявление о вакансии, false если новость/анонс/болталка
 
-Пример ответа:
-{"role":"Product Manager","company":"Acme","recruiter_handle":"@hr_anna","salary":"от 200 000 ₽","location":"Москва/удалённо","link":"https://hh.ru/vacancy/123","description":"Развитие B2B-продукта","is_vacancy":true}"""
+Если в тексте НЕСКОЛЬКО вакансий (дайджест, подборка) — верни JSON-массив, по
+одному объекту на вакансию, с теми же полями. Не сливай их в один объект и не
+выбирай одну из них. Если вакансия одна — верни один объект.
+
+Пример ответа (одна вакансия):
+{"role":"Product Manager","company":"Acme","recruiter_handle":"@hr_anna","salary":"от 200 000 ₽","location":"Москва/удалённо","link":"https://hh.ru/vacancy/123","description":"Развитие B2B-продукта","is_vacancy":true}
+
+Пример ответа (несколько вакансий):
+[{"role":"Product Manager","company":"Acme","recruiter_handle":null,"salary":null,"location":"Москва","link":"https://hh.ru/vacancy/1","description":null,"is_vacancy":true},{"role":"Data Analyst","company":"Beta","recruiter_handle":"@hr_ivan","salary":null,"location":"удалённо","link":null,"description":null,"is_vacancy":true}]"""
 
 
 # ── Parser ────────────────────────────────────────────────────────────────────
+
+# Сколько раз пробуем разобрать пост, прежде чем оставить его в покое. Пост
+# при сбое НЕ помечается разобранным, поэтому без потолка он поднимался бы в
+# каждом прогоне и жёг вызовы.
+MAX_PARSE_ATTEMPTS = int(os.environ.get("PARSER_MAX_ATTEMPTS", "3"))
+
+# Ответ с несколькими вакансиями в 400 токенов не влезает: массив обрывался
+# на середине, и всё, что не успело закрыться, отбрасывалось.
+PARSER_MAX_TOKENS = int(os.environ.get("PARSER_MAX_TOKENS", "1200"))
+
 
 class Parser:
     def __init__(self):
@@ -140,34 +158,52 @@ class Parser:
 
     def run(self, limit: Optional[int] = None) -> dict:
         from jobsignal.llm import complete_text, LLMError
-        batch = int(__import__('os').environ.get("PARSER_BATCH_LIMIT", "200"))
+        batch = int(os.environ.get("PARSER_BATCH_LIMIT", "200"))
         if limit:
             batch = limit
 
         session = self._sf()
         posts = (
             session.query(RawPost)
-            .filter(RawPost.parsed == False, RawPost.text.isnot(None))
+            .filter(RawPost.parsed == False, RawPost.text.isnot(None),
+                    RawPost.parse_attempts < MAX_PARSE_ATTEMPTS)
             .limit(batch)
             .all()
         )
 
-        parsed = vacancies = skipped = errors = 0
+        parsed = vacancies = skipped = errors = retry = gave_up = 0
 
         for post in posts:
             try:
-                result = self._parse_post(post, session)
-                if result == "vacancy":
-                    vacancies += 1
-                elif result == "skipped":
-                    skipped += 1
-                parsed += 1
-                post.parsed = True
-                session.commit()
+                result, made = self._parse_post(post, session)
             except Exception as exc:
                 log.warning("[parser] post %d error: %s", post.id, exc)
-                errors += 1
                 session.rollback()
+                result, made = "error", 0
+
+            if result in ("vacancy", "skipped"):
+                # Пост разобран: либо дал вакансии, либо это осознанно не
+                # вакансия. Только здесь его можно закрывать.
+                vacancies += made
+                skipped += 1 if result == "skipped" else 0
+                parsed += 1
+                post.parsed = True
+            else:
+                # Сбой разбора. parsed НЕ ставим: пост не разобран, и пометка
+                # выкинула бы его из очереди навсегда — так потерялись 7875,
+                # 7958, 7973, 7975. Считаем попытку; когда они кончатся,
+                # выборка перестанет его поднимать, а parsed=0 останется
+                # честным признаком «не разобран».
+                post.parse_attempts = (post.parse_attempts or 0) + 1
+                errors += 1
+                if post.parse_attempts >= MAX_PARSE_ATTEMPTS:
+                    gave_up += 1
+                    log.warning("[parser] post %d: %d неудачных попыток — "
+                                "больше не берём в работу", post.id,
+                                post.parse_attempts)
+                else:
+                    retry += 1
+            session.commit()
 
         session.close()
         summary = {
@@ -176,18 +212,27 @@ class Parser:
             "vacancies": vacancies,
             "skipped": skipped,
             "errors": errors,
+            "retry": retry,
+            "gave_up": gave_up,
         }
-        log.info("[parser] обработано: %d, вакансий: %d, отсеяно: %d, ошибок API: %d",
-                 parsed, vacancies, skipped, errors)
+        log.info("[parser] обработано: %d, вакансий: %d, отсеяно: %d, "
+                 "сбоев: %d (повторим: %d, исчерпали попытки: %d)",
+                 parsed, vacancies, skipped, errors, retry, gave_up)
         return summary
 
-    def _parse_post(self, post: RawPost, session) -> str:
+    def _parse_post(self, post: RawPost, session) -> tuple[str, int]:
+        """Разбирает пост. Возвращает (исход, сколько вакансий создано).
+
+        Исход «vacancy»/«skipped» — пост разобран и закрывается; «error»/
+        «bad_json» — разбор не удался, пост остаётся в очереди со счётчиком
+        попыток.
+        """
         from jobsignal.config import get_config
-        from jobsignal.llm import complete_text, LLMError, _loads_lenient
+        from jobsignal.llm import complete_text, LLMError, _loads_lenient_many
 
         text = (post.text or "").strip()
         if not text or len(text) < 30:
-            return "skipped"
+            return "skipped", 0
 
         # Extract all URLs from raw text BEFORE sending to LLM
         text_links = _extract_links_from_text(text)
@@ -199,19 +244,32 @@ class Parser:
         # основной модели, а разбору полей большего и не нужно.
         model = get_config().settings.parser_model
         try:
-            raw = complete_text(SYSTEM, prompt, model, 400, tag=f"post#{post.id}")
+            raw = complete_text(SYSTEM, prompt, model, PARSER_MAX_TOKENS,
+                                tag=f"post#{post.id}")
         except LLMError as exc:
             log.warning("[parser] LLM error post %d: %s", post.id, exc)
-            return "error"
+            return "error", 0
 
         try:
-            data = _loads_lenient(raw)
+            items = _loads_lenient_many(raw)
         except Exception:
             log.warning("[parser] bad JSON post %d: %.120s", post.id, raw)
-            return "skipped"
+            return "bad_json", 0
 
-        if not data.get("is_vacancy"):
-            return "skipped"
+        # В посте может быть несколько вакансий (дайджест) — каждая становится
+        # отдельной строкой, иначе из подборки доходила бы только первая.
+        made = 0
+        for data in items:
+            if not isinstance(data, dict) or not data.get("is_vacancy"):
+                continue
+            self._create_vacancy(post, data, text, text_links, session)
+            made += 1
+        if made:
+            return "vacancy", made
+        return "skipped", 0
+
+    def _create_vacancy(self, post: RawPost, data: dict, text: str,
+                        text_links: list[str], session) -> None:
 
         # ── link: prefer extracted links, use LLM link only if real ──────────
         llm_link = data.get("link")
@@ -266,4 +324,3 @@ class Parser:
             contact_type=contact_type,
         )
         session.add(v)
-        return "vacancy"
