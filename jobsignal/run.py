@@ -200,13 +200,23 @@ def main():
 
     elif cmd == "pipeline":
         from jobsignal.orchestrator import Orchestrator
-        # also collect from hh.ru
+        # Сбор с hh.ru. Телеграм-часть конвейера от него не зависит, поэтому
+        # прогон продолжаем — но поломку не проглатываем: она идёт в лог
+        # уровнем error и в код возврата. Раньше здесь был warning, и мёртвый
+        # сбор («добавлено 0» с конца июня) никто не замечал два с половиной
+        # месяца.
+        hh_error = None
         try:
             from jobsignal.agents.hh_collector import HHCollector
             HHCollector().run()
-        except Exception as e:
-            logging.warning("hh collect error: %s", e)
+        except Exception as exc:
+            hh_error = exc
+            logging.error("[hh] СБОР С HH.RU СЛОМАН: %s", exc, exc_info=True)
         Orchestrator().run_once()
+        if hh_error is not None:
+            logging.error("[hh] конвейер отработал, но вакансии с hh.ru не "
+                          "собирались: %s", hh_error)
+            sys.exit(1)
 
     elif cmd == "status":
         from jobsignal.db import get_session_factory, Channel, RawPost, Vacancy, Application, Application as Reply
