@@ -17,6 +17,7 @@ COMMANDS = (
     "raw-dedup", "parse", "dedup", "match", "compose",
     "hh-collect", "find-channels",          # NEW: search tgstat/telemetr
     "hh-apply", "hh-preview",                # NEW: автоотклик на hh.ru
+    "hh-session",             # NEW: жива ли сессия hh.ru и надолго ли
     "channels",               # NEW: list channels
     "pipeline", "status", "dashboard", "serve",
 )
@@ -226,8 +227,61 @@ def main():
         print(f"\nИтого: {len(chs)} активных каналов")
         s.close()
 
+    elif cmd == "hh-session":
+        """Состояние сессии hh.ru.
+
+        Без флагов — только чтение файла, в сеть не ходит.
+        --probe   — сходить на hh и проверить, пускают ли (поднимает Chromium)
+        --notify  — отправить тревогу в телеграм, если сессия плоха
+        """
+        import argparse
+        ap = argparse.ArgumentParser(prog="run.py hh-session")
+        ap.add_argument("--probe", action="store_true",
+                        help="живая проверка на hh.ru, а не только файл")
+        ap.add_argument("--notify", action="store_true",
+                        help="отправить тревогу в телеграм, если сессия плоха")
+        ap.add_argument("--force-notify", action="store_true",
+                        help="отправить, даже если такая тревога уже уходила")
+        opts = ap.parse_args(sys.argv[2:])
+
+        from jobsignal import hh_session
+        lock = None
+        if opts.probe:
+            # Живая проба открывает hh.ru — тот же адрес, что сбор и отклик,
+            # и тот же замок. Читать файл замок не мешает, поэтому берём его
+            # только под пробу.
+            lock = _take_hh_lock()
+            if lock is None:
+                logging.error("[hh] сейчас идёт другая работа с hh.ru — "
+                              "замок %s занят; проверяю только файл",
+                              HH_LOCK_PATH)
+                opts.probe = False
+        st = hh_session.status(probe_live=bool(opts.probe))
+        print()
+        print(hh_session.report(st))
+        print()
+        if opts.notify or opts.force_notify:
+            sent = hh_session.notify(st, force=opts.force_notify)
+            print("тревога отправлена" if sent else
+                  "тревогу не отправлял (сессия в порядке или уже сообщал)")
+        sys.exit(0 if st.level is not hh_session.Level.DEAD else 1)
+
     elif cmd == "pipeline":
         from jobsignal.orchestrator import Orchestrator
+
+        # Сессия hh.ru живёт до первого разлогина на стороне hh и
+        # обновляется только руками. Проверяем её в начале каждого прогона:
+        # дешёвая проверка файла — всегда, живая проба — раз в несколько
+        # часов. Плохая сессия прогон не останавливает (сбор и телеграм от
+        # неё не зависят), но уходит сообщением в телеграм — раньше система
+        # просто переставала отправлять отклики, и молча.
+        from jobsignal import hh_session
+        try:
+            hh_session.guard()
+        except Exception as exc:  # noqa: BLE001 — присмотр не должен ронять работу
+            logging.error("[hh_session] проверка сессии сорвалась: %s",
+                          exc, exc_info=True)
+
         # Сбор с hh.ru. Телеграм-часть конвейера от него не зависит, поэтому
         # прогон продолжаем — но поломку не проглатываем: она идёт в лог
         # уровнем error и в код возврата. Раньше здесь был warning, и мёртвый

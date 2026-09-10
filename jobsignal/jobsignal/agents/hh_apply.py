@@ -43,6 +43,7 @@ from typing import Any
 
 from sqlalchemy import text as sql_text
 
+from .. import hh_session
 from ..db import Vacancy, VacancyStatus, get_session_factory
 from ..ratelimit import rate_status
 from .base import BaseAgent
@@ -50,12 +51,14 @@ from .outreach import detect_contact_type, normalize_hh_link
 
 log = logging.getLogger("jobsignal")
 
-BASE_URL = "https://hh.ru"
-# Страница, которую hh отдаёт только залогиненному: гостя редиректит на логин.
-LOGIN_PROBE_URL = f"{BASE_URL}/applicant/resumes"
-LOGIN_URL_MARKERS = ("/account/login", "/account/signup", "/auth/applicant")
+BASE_URL = hh_session.BASE_URL
+# Проверка логина живёт в jobsignal.hh_session — там же, где ежечасная
+# проверка сессии по расписанию. Один источник правды: если завтра hh
+# сменит адрес пробы, чинить придётся в одном месте, а не в двух.
+LOGIN_PROBE_URL = hh_session.LOGIN_PROBE_URL
+LOGIN_URL_MARKERS = hh_session.LOGIN_URL_MARKERS
 
-DEFAULT_STATE_PATH = "/root/autoapply/state.json"
+DEFAULT_STATE_PATH = hh_session.DEFAULT_STATE_PATH
 # Дефолтный бюджет предпросмотра: сколько вакансий показать, если --limit не задан.
 DEFAULT_DRY_LIMIT = 10
 # Сколько вакансий открыть на один слот отправки в боевом режиме и сколько
@@ -427,6 +430,8 @@ class HHApplyAgent(BaseAgent):
         self._Session = get_session_factory()
         # Ставится после успешной проверки логина; без него state.json не пишем.
         self._session_ok = False
+        # Чем именно не понравилась сессия — попадает в отчёт и в телеграм.
+        self._session_detail = ""
         # Прочитана ли за прогон хотя бы одна страница вакансии. Отличает
         # «эту вакансию hh не отдаёт» от «hh не отдаёт ничего»: во втором
         # случае вычищать очередь по 403 нельзя.
@@ -823,14 +828,17 @@ class HHApplyAgent(BaseAgent):
             async with self._browser() as page:
                 if not await self._logged_in(page):
                     report.error = (
-                        f"сессия hh.ru недействительна ({self.state_path}). "
-                        "На сервере нет дисплея, поэтому логин проходится на "
-                        "машине с экраном — /root/autoapply/tools/hh_login_local.py "
-                        "--upload — и state.json копируется сюда. Проверка: "
-                        "cd /root/autoapply && .venv/bin/python -m autoapply.cli "
-                        "login --check -c config.yaml"
+                        f"сессия hh.ru недействительна ({self.state_path}): "
+                        f"{self._session_detail}. Инструкция, как перелогиниться, "
+                        f"ушла в телеграм; посмотреть её же в консоли: "
+                        f"run.py hh-session"
                     )
                     log.error("[hh_apply] %s", report.error)
+                    # Молча вернуть «ошибка» мало: прогон отклика запускают
+                    # руками и по расписанию, и без сообщения человек узнаёт
+                    # о разлогине только заглянув в журнал. Дедупликация
+                    # тревоги — внутри notify.
+                    hh_session.report_dead(self._session_detail)
                     return report
 
                 for item in queue:
@@ -956,21 +964,20 @@ class HHApplyAgent(BaseAgent):
         при редизайне — приходилось править селекторы. Здесь опираемся на
         поведение, а не на вёрстку: гостя hh редиректит с /applicant/resumes
         на /account/login. Нет редиректа на логин — сессия жива.
-        """
-        try:
-            await page.goto(LOGIN_PROBE_URL, wait_until="domcontentloaded")
-        except Exception as exc:  # noqa: BLE001
-            log.error("[hh_apply] не открылась %s: %s", LOGIN_PROBE_URL, exc)
-            return False
 
-        url = page.url
-        if any(m in url for m in LOGIN_URL_MARKERS):
-            log.error("[hh_apply] редирект на логин: %s", url)
+        Сама проверка — в hh_session.check_page: туда же ходит ежечасная
+        проверка по расписанию, и результат этой пробы тоже записывается в
+        журнал сессии. Иначе отклик, только что упёршийся в разлогин, не
+        считался бы наблюдением, и в телеграм ушло бы «последний раз
+        пускали» полусуточной давности.
+        """
+        alive, detail = await hh_session.check_page(page)
+        hh_session.record_probe(alive)
+        if not alive:
+            log.error("[hh_apply] сессия не прошла проверку: %s", detail)
+            self._session_detail = detail
             return False
-        if "hh.ru" not in url:
-            log.error("[hh_apply] неожиданный редирект: %s", url)
-            return False
-        log.info("[hh_apply] сессия жива, hh отдал %s", url)
+        log.info("[hh_apply] сессия жива, hh отдал %s", detail)
         self._session_ok = True
         return True
 
