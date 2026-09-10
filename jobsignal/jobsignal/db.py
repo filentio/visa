@@ -57,6 +57,12 @@ class RawPost(Base):
     # отсекает посты, исчерпавшие попытки: parsed=0 у них остаётся честным
     # признаком «не разобран».
     parse_attempts = Column(Integer, nullable=False, default=0)
+    # Пост собран, но полного текста вакансии в нём ещё нет: у hh описание
+    # лежит на отдельной странице, а догрузок за прогон ограниченное число
+    # (HH_DESC_LIMIT). Парсер такие посты не берёт — иначе матчер снова
+    # оценивал бы вакансию по одному заголовку. Следующий прогон добирает
+    # описание и снимает признак.
+    awaiting_details = Column(Boolean, nullable=False, default=False)
     channel = relationship("Channel", back_populates="raw_posts")
     __table_args__ = (UniqueConstraint("channel_id", "tg_message_id"),)
 

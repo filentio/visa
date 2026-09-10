@@ -166,6 +166,7 @@ class Parser:
         posts = (
             session.query(RawPost)
             .filter(RawPost.parsed == False, RawPost.text.isnot(None),
+                    RawPost.awaiting_details == False,
                     RawPost.parse_attempts < MAX_PARSE_ATTEMPTS)
             .limit(batch)
             .all()

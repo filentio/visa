@@ -2,7 +2,7 @@
 HHCollector — сбор вакансий с hh.ru через встроенное состояние страницы.
 
 api.hh.ru/vacancies с этого сервера закрыт: ddos-guard отдаёт 403 на любой
-запрос к разделу вакансий — проверено пятью способами, список в
+запрос к разделу вакансий — проверено семью способами, список в
 docs/ARCHITECTURE.md. Повторно проверять его не нужно.
 
 Страницы самого hh.ru при этом открываются обычным requests и без сессии, а
@@ -224,6 +224,21 @@ def _fetch_description(vac_id: int) -> Optional[str]:
     return _clean_html(view.get("description"))
 
 
+def _with_description(text: str, desc: str) -> str:
+    """Дописать описание в уже собранный текст поста — перед строкой ссылки."""
+    lines = text.split("\n")
+    idx = next((i for i, l in enumerate(lines) if l.startswith("Ссылка:")),
+               len(lines))
+    lines.insert(idx, f"Описание: {desc}")
+    return "\n".join(lines)
+
+
+def _gone(exc: Exception) -> bool:
+    """Вакансия снята: описания не будет и ждать его больше незачем."""
+    resp = getattr(exc, "response", None)
+    return resp is not None and resp.status_code in (404, 410)
+
+
 def _format_post_text(item: dict) -> str:
     """Convert hh.ru vacancy item to text for parser."""
     parts = []
@@ -351,7 +366,7 @@ class HHCollector:
 
         log.info("[hh] карточек: %d, новых: %d — догружаю описания",
                  cards_total, len(fresh))
-        descriptions = self._load_descriptions(fresh, session)
+        descriptions = self._settle_descriptions(session, ch, fresh)
 
         for item in fresh:
             posted_at = self._posted_at(item)
@@ -362,6 +377,10 @@ class HHCollector:
                 post_url=HH_VACANCY_URL.format(item["id"]),
                 posted_at=posted_at,
                 parsed=False,
+                # Описание не влезло в бюджет прогона — пост сохраняем, но
+                # парсеру не отдаём: оценка по одному заголовку бессмысленна.
+                # Следующий прогон доберёт описание и снимет признак.
+                awaiting_details=not item.get("description"),
             )
             session.add(post)
             added += 1
@@ -382,11 +401,58 @@ class HHCollector:
                  added, descriptions)
         return result
 
-    def _load_descriptions(self, fresh: list[dict], session) -> int:
-        """Полные описания для новых вакансий — до матчинга, иначе он судит
-        по названию должности."""
+    def _settle_descriptions(self, session, ch, fresh: list[dict]) -> int:
+        """Раздать бюджет догрузок: сначала долги прошлых прогонов, потом новые.
+
+        Порядок именно такой. Иначе свежая выдача каждый прогон вытесняла бы
+        накопленные долги, и вакансии, не влезшие в бюджет, висели бы без
+        описания вечно — а без описания матчер оценивает их по заголовку.
+        """
+        budget = HH_DESC_LIMIT
         loaded = failed = 0
-        for item in fresh[:HH_DESC_LIMIT]:
+
+        pending = (
+            session.query(RawPost)
+            .filter(RawPost.channel_id == ch.id,
+                    RawPost.awaiting_details == True)  # noqa: E712
+            .order_by(RawPost.id)
+            .limit(budget)
+            .all()
+        )
+        if pending:
+            log.info("[hh] долгов по описаниям: %d", len(pending))
+        for post in pending:
+            if budget <= 0:
+                break
+            budget -= 1
+            try:
+                desc = _fetch_description(int(post.tg_message_id))
+            except HHStructureChanged:
+                session.close()
+                raise
+            except requests.RequestException as exc:
+                if _gone(exc):
+                    # Вакансия снята: описания не будет, держать её в долгах
+                    # незачем — пусть парсер разбирает то, что есть.
+                    post.awaiting_details = False
+                else:
+                    failed += 1
+                    log.warning("[hh] описание %s не загрузилось: %s",
+                                post.tg_message_id, exc)
+                time.sleep(DESC_DELAY)
+                continue
+            if desc:
+                post.text = _with_description(post.text, desc)
+                loaded += 1
+            # Пустое описание — тоже ответ: ждать больше нечего.
+            post.awaiting_details = False
+            time.sleep(DESC_DELAY)
+        session.commit()
+
+        for item in fresh:
+            if budget <= 0:
+                break
+            budget -= 1
             try:
                 item["description"] = _fetch_description(int(item["id"]))
                 loaded += 1
@@ -395,7 +461,8 @@ class HHCollector:
                 raise
             except requests.RequestException as exc:
                 failed += 1
-                log.warning("[hh] описание %s не загрузилось: %s", item["id"], exc)
+                log.warning("[hh] описание %s не загрузилось: %s",
+                            item["id"], exc)
             time.sleep(DESC_DELAY)
 
         if fresh and loaded == 0 and failed >= 5:
@@ -404,9 +471,10 @@ class HHCollector:
                 f"ни одно описание не загрузилось ({failed} попыток) — "
                 f"страницы вакансий недоступны"
             )
-        if len(fresh) > HH_DESC_LIMIT:
-            log.warning("[hh] описания загружены только для %d из %d новых "
-                        "(потолок HH_DESC_LIMIT)", HH_DESC_LIMIT, len(fresh))
+        waiting = sum(1 for i in fresh if not i.get("description"))
+        if waiting:
+            log.info("[hh] без описания пока остаются %d новых — доберём "
+                     "следующими прогонами, в матчер они не пойдут", waiting)
         return loaded
 
     @staticmethod
