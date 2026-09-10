@@ -46,9 +46,23 @@ journalctl -u jobsignal-pipeline -f            # смотреть лог сбо�
 Дашборд: `http://5.42.104.39:5000` (логин/пароль из .env).
 
 ## Эксплуатация
-- Конвейер идёт сам каждые 6 часов (таймер systemd).
-- Логи: `journalctl -u jobsignal-dashboard -f` и `journalctl -u jobsignal-pipeline -f`.
-- Изменить частоту: правь `OnUnitActiveSec` в `/etc/systemd/system/jobsignal-pipeline.timer`, затем `systemctl daemon-reload && systemctl restart jobsignal-pipeline.timer`.
+- Два таймера, разнесённые по времени, потому что оба работают с hh.ru через
+  общий замок `/run/jobsignal-hh.lock`:
+  - `jobsignal-pipeline.timer` — сбор, разбор, оценка. `*:07`, до получаса работы.
+  - `jobsignal-hh-apply.timer` — отправка откликов. `*:45`, когда конвейер отработал.
+- Отправка идёт только при `OUTREACH_MODE=full_auto` в `config/.env`. Строчка
+  `semi_auto` возвращает систему под присмотр — таймер при этом гасить не нужно,
+  прогон сам выйдет, ничего не отправив.
+- Порогов два: `MATCH_THRESHOLD` (70) — что видно в дашборде и попадает в очередь
+  при ручной отправке; `HH_AUTO_THRESHOLD` (80) — что уходит само по таймеру.
+  Вакансии между порогами ждут решения руками.
+- Число отправок ограничено `OUTREACH_PER_HOUR` / `OUTREACH_PER_DAY` — квота общая
+  с телеграм-откликами, таймер её не обходит.
+- Каждый ушедший отклик приходит в телеграм: вакансия, компания, оценка, профиль, ссылка.
+- Логи: `journalctl -u jobsignal-dashboard -f`, `-u jobsignal-pipeline -f`,
+  `-u jobsignal-hh-apply -f`.
+- Изменить время: правь `OnCalendar` в `/etc/systemd/system/jobsignal-*.timer`, затем
+  `systemctl daemon-reload && systemctl restart jobsignal-pipeline.timer jobsignal-hh-apply.timer`.
 - Обновить код: повторный `scp` поверх + `systemctl restart jobsignal-dashboard`.
 
 ## Память (1 ГБ)

@@ -1,0 +1,32 @@
+[Unit]
+Description=jobsignal: автоотклик на hh.ru (полностью автоматическая отправка)
+Documentation=file:///root/visa/docs/ARCHITECTURE.md
+After=network-online.target
+Wants=network-online.target
+OnFailure=jobsignal-alert@%n.service
+
+[Service]
+Type=oneshot
+# run.py делает load_dotenv("config/.env") относительным путём.
+WorkingDirectory=/opt/jobsignal_local
+# --auto — не то же, что --send вручную:
+#   * прогон идёт только при OUTREACH_MODE=full_auto, иначе выходит с 0 и
+#     ничего не отправляет. Вернуть систему под присмотр — одна строчка в
+#     config/.env, гасить таймер не нужно;
+#   * порог очереди берётся из HH_AUTO_THRESHOLD (80), а не MATCH_THRESHOLD
+#     (70): вакансии между порогами остаются в дашборде под решение руками;
+#   * занятый замок /run/jobsignal-hh.lock — тоже выход с 0: значит конвейер
+#     ещё работает с hh, и отправка возьмёт своё на следующем срабатывании.
+# Замок берёт сам run.py (fcntl), поэтому flock в ExecStart не нужен.
+ExecStart=/opt/jobsignal_local/.venv/bin/python run.py hh-apply --send --auto
+# Прогон открывает Chromium и держит паузы HH_DELAY_MIN/MAX между откликами:
+# три отправки с разговором с моделью укладываются в минуты, но полчаса —
+# страховка от зависшего браузера, а не бюджет времени.
+TimeoutStartSec=1800
+# Отправка важнее фонового разбора, но дашборда и бота не заслоняет.
+Nice=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
