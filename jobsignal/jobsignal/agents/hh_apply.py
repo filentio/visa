@@ -427,6 +427,7 @@ class HHApplyAgent(BaseAgent):
         headless: bool | None = None,
         state_path: str | None = None,
         threshold: int | None = None,
+        max_sends: int | None = None,
     ) -> None:
         super().__init__(config)
         self.dry_run = dry_run
@@ -435,6 +436,11 @@ class HHApplyAgent(BaseAgent):
         # ровно то, что видно в дашборде. Автоматический прогон по таймеру
         # передаёт свой, более высокий: см. run.py hh-apply --auto.
         self.threshold = threshold
+        # Сколько отправок сделать за этот прогон. None — сколько разрешит
+        # квота. Автоматический прогон присылает 1: интервал между откликами
+        # задаёт таймер, а прогон должен быть коротким и не держать замок
+        # /run/jobsignal-hh.lock, пока он спит между отправками.
+        self.max_sends = max_sends
         self.headless = (
             headless
             if headless is not None
@@ -443,9 +449,12 @@ class HHApplyAgent(BaseAgent):
         self.state_path = Path(
             state_path or os.environ.get("HH_STATE_PATH", DEFAULT_STATE_PATH)
         )
+        # Пауза между отправками внутри прогона. 4,5-6,5 минуты: при десяти
+        # откликах в час прежние 12-35 секунд означали пачку из трёх штук за
+        # две минуты и час тишины после неё.
         self.delay = (
-            float(os.environ.get("HH_DELAY_MIN", "12")),
-            float(os.environ.get("HH_DELAY_MAX", "35")),
+            float(os.environ.get("HH_DELAY_MIN", "270")),
+            float(os.environ.get("HH_DELAY_MAX", "390")),
         )
         # Пауза между просто открытыми страницами (архив, дубликат, нет
         # кнопки): отправки не было, ждать 12-35 секунд незачем, но и грузить
@@ -880,6 +889,8 @@ class HHApplyAgent(BaseAgent):
 
             rate = rate_status(session)
             report.send_budget = 0 if self.dry_run else rate["allowed_now"]
+            if self.max_sends is not None and self.max_sends > 0:
+                report.send_budget = min(report.send_budget, self.max_sends)
 
             # ── ЗАЩИТА ОТ ДЕФЕКТА №1 ──────────────────────────────────────
             # Два независимых счётчика:
@@ -948,7 +959,7 @@ class HHApplyAgent(BaseAgent):
                         report.stopped_reason = "бюджет прогона исчерпан"
                         break
                     if not self.dry_run and sends_left <= 0:
-                        report.stopped_reason = "лимит откликов исчерпан"
+                        report.stopped_reason = self._out_of_sends()
                         break
 
                     # Вакансию открываем — попытка списывается независимо
@@ -1262,6 +1273,19 @@ class HHApplyAgent(BaseAgent):
         except Exception:  # noqa: BLE001
             return False
         return bool(ARCHIVED_TEXT_RE.search(title))
+
+    def _out_of_sends(self) -> str:
+        """Почему прогон больше не отправляет: свой бюджет или общая квота.
+
+        Разница видна только по свежей квоте. Прогон по таймеру делает одну
+        отправку и упирается в СВОЙ бюджет, а не в лимиты — писать ему «лимит
+        откликов исчерпан» значит пугать тем, чего нет.
+        """
+        left = rate_status()["allowed_now"]
+        if self.max_sends is not None and 0 < self.max_sends and left > 0:
+            return (f"прогон сделал свои {self.max_sends} — квота позволяет "
+                    f"ещё {left}, их возьмут следующие слоты таймера")
+        return "квота откликов исчерпана"
 
     async def _limit_notice(self, page) -> str:
         """Текст про исчерпанный лимит откликов на странице — или пустая строка.

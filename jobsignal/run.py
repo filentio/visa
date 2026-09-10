@@ -164,8 +164,9 @@ def main():
         from jobsignal.config import get_config, OutreachMode
         cfg = get_config()
 
-        # Автоматический прогон отличается от ручного двумя вещами.
+        # Автоматический прогон отличается от ручного тремя вещами.
         threshold = None
+        max_sends = None
         if opts.auto:
             # Первое: он спрашивает разрешение у OUTREACH_MODE. Иначе вернуть
             # систему под присмотр значило бы не поменять строчку в .env, а
@@ -179,6 +180,12 @@ def main():
             # Второе: планка выше. За ручной отправкой стоит человек, который
             # посмотрел вакансию, за этой — никто.
             threshold = int(cfg.settings.hh_auto_threshold)
+            # Одна отправка за прогон: интервал между откликами задаёт таймер
+            # (десять слотов в час), а прогон живёт минуту-две. Иначе паузы
+            # 4,5-6,5 минуты держали бы замок /run/jobsignal-hh.lock почти
+            # весь час, и конвейер пропускал бы прогоны — вместе с разбором,
+            # оценкой и уведомлениями, которым hh вообще не нужен.
+            max_sends = int(os.environ.get("HH_MAX_SENDS_PER_RUN", "1"))
             logging.info(
                 "[hh_apply] автоматический прогон: порог %d%%; вакансии от "
                 "%d%% до %d%% остаются в дашборде и ждут решения руками",
@@ -206,6 +213,7 @@ def main():
             result = HHApplyAgent(
                 cfg, dry_run=not opts.send, limit=opts.limit,
                 headless=not opts.headed, threshold=threshold,
+                max_sends=max_sends,
             ).run()
 
         rate = result.get("rate", {})
