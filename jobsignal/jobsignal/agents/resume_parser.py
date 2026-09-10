@@ -4,6 +4,10 @@ ResumeParser — парсит PDF резюме и сохраняет текст 
 Запускается автоматически при загрузке резюме через /resumes.
 Текст резюме используется при генерации сопроводительных писем
 вместо хардкода — исключает галлюцинации.
+
+Какой PDF брать для профиля, решает pdf_path_for(): отдельных резюме по
+профилям больше нет, все три указывают в profiles.yaml на общее
+config/master_cv.pdf.
 """
 from __future__ import annotations
 
@@ -21,6 +25,36 @@ PROFILE_MAP = {
     "cpo": "CPO / Head of Product",
     "pm": "Senior PM/PO",
 }
+
+
+def pdf_path_for(profile_key: str) -> Path | None:
+    """PDF профиля: свой файл в config/resumes/, иначе resume_path из profiles.yaml.
+
+    Позиционирование единое, поэтому все три профиля указывают на общее
+    config/master_cv.pdf — обновлять надо один файл. Личный PDF профиля, если
+    его загрузили через /resumes, остаётся главнее: иначе загрузка молча
+    уходила бы в никуда.
+    """
+    own = RESUME_DIR / f"{profile_key}.pdf"
+    if own.exists():
+        return own
+
+    profiles_yaml = Path("config/profiles.yaml")
+    if not profiles_yaml.exists():
+        return None
+    import yaml
+    with profiles_yaml.open(encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    name = PROFILE_MAP.get(profile_key)
+    for p in data.get("profiles", []):
+        if p.get("name") != name:
+            continue
+        rp = p.get("resume_path")
+        if not rp:
+            return None
+        path = Path(rp)
+        return path if path.exists() else None
+    return None
 
 
 def _ensure_table():
@@ -79,9 +113,11 @@ def parse_and_save(profile_key: str) -> dict:
     """Parse PDF for given profile_key and save to DB."""
     _ensure_table()
 
-    pdf_path = RESUME_DIR / f"{profile_key}.pdf"
-    if not pdf_path.exists():
-        return {"ok": False, "error": f"PDF not found: {pdf_path}"}
+    pdf_path = pdf_path_for(profile_key)
+    if pdf_path is None:
+        return {"ok": False,
+                "error": f"PDF не найден для профиля {profile_key}: нет ни "
+                         f"{RESUME_DIR}/{profile_key}.pdf, ни resume_path из profiles.yaml"}
 
     text = _extract_pdf_text(str(pdf_path))
     if not text:

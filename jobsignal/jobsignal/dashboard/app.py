@@ -577,14 +577,18 @@ def resumes_page():
 @_requires_auth
 def api_resumes_status():
     RESUME_DIR.mkdir(parents=True, exist_ok=True)
+    from jobsignal.agents.resume_parser import pdf_path_for
     result = {}
     for key in PROFILE_KEYS:
-        path = RESUME_DIR / f"{key}.pdf"
-        if path.exists():
+        # Не RESUME_DIR/<key>.pdf: отдельных PDF по профилям больше нет, все
+        # три ссылаются на мастер-резюме. Иначе страница показывала бы
+        # «файла нет» там, где письма и отправка резюме работают.
+        path = pdf_path_for(key)
+        if path is not None:
             stat = path.stat()
             result[key] = {
                 "exists": True,
-                "filename": f"{key}.pdf",
+                "filename": path.name,
                 "size_kb": round(stat.st_size / 1024),
                 "updated": datetime.fromtimestamp(stat.st_mtime).strftime("%d.%m.%Y %H:%M"),
             }
@@ -636,8 +640,9 @@ def api_resumes_upload():
 def api_resumes_download(key):
     if key not in PROFILE_KEYS:
         abort(404)
-    path = RESUME_DIR / f"{key}.pdf"
-    if not path.exists():
+    from jobsignal.agents.resume_parser import pdf_path_for
+    path = pdf_path_for(key)
+    if path is None:
         abort(404)
     return send_file(str(path), as_attachment=True, download_name=f"resume_{key}.pdf")
 

@@ -162,17 +162,13 @@ def _cover_text(role: str, company: str, profile_key: str, recruiter_name: str =
         "CPO / Head of Product": "CPO / Head of Product",
         "Senior PM/PO": "Senior Product Manager",
     }
-    companies_by_profile = {
-        "ai_pm": "ФИНАМ, ОТП Банк",
-        "cpo": "ФИНАМ, Мосбиржа",
-        "pm": "ФИНАМ, Мосбиржа, ОТП Банк",
-    }
-
+    # Списка компаний в промпте нет умышленно: он был захардкожен и перебивал
+    # резюме — обновление мест работы никуда не доходило, а закрытое место
+    # продолжало выглядеть текущим. Места работы модель берёт из текста ниже.
     user = (
         f"Вакансия: {role}{company_part}\n"
         f"Имя рекрутёра: {recruiter_name or 'неизвестно'}\n"
-        f"Профиль кандидата: {profile_labels.get(profile_key, profile_key)}\n"
-        f"Компании из опыта: {companies_by_profile.get(resume_key, 'ФИНАМ, Мосбиржа')}\n\n"
+        f"Профиль кандидата: {profile_labels.get(profile_key, profile_key)}\n\n"
         f"Резюме кандидата:\n{resume_text[:3500]}\n\n"
         f"Напиши сопроводительное письмо. "
         f"Начни с \'Добрый день{name_part}\'. "
@@ -277,10 +273,11 @@ class NotifyBot:
             # second message: forward-ready with resume
             cover = _cover_text(role, company, profile_key)
             caption = f"👇 <i>Перешли это сообщение рекрутёру</i>\n\n{_esc(cover)}"
+            from jobsignal.agents.resume_parser import pdf_path_for
             resume_key = PROFILE_KEY_MAP.get(profile_key, "pm")
-            resume_path = RESUME_DIR / f"{resume_key}.pdf"
+            resume_path = pdf_path_for(resume_key)
 
-            if resume_path.exists():
+            if resume_path is not None:
                 _send_doc(str(resume_path), caption)
             else:
                 _send(caption)
