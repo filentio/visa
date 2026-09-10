@@ -12,11 +12,18 @@ Type=oneshot
 WorkingDirectory=/opt/jobsignal_local
 # flock: сбор и отклик ходят на hh с одного адреса, одновременно им там
 # делать нечего. Тот же файл берёт run.py для hh-apply.
-ExecStart=/usr/bin/flock -n /run/jobsignal-hh.lock /opt/jobsignal_local/.venv/bin/python run.py pipeline
+# Занятый замок — не поломка, а штатный пропуск: -E 75 отделяет его от кода
+# 1, которым сам run.py сообщает о сломанном сборе с hh.ru. Пропуск виден в
+# журнале строкой ниже, тревога в телеграм при нём не уходит.
+ExecStart=/bin/sh -c 'flock -n -E 75 /run/jobsignal-hh.lock /opt/jobsignal_local/.venv/bin/python run.py pipeline; rc=$$?; [ "$$rc" -eq 75 ] && echo "jobsignal: прогон пропущен — замок /run/jobsignal-hh.lock занят, работа с hh.ru уже идёт"; exit "$$rc"'
+SuccessExitStatus=75
 # Зависший прогон не должен занимать замок и слот таймера бесконечно.
 # У Type=oneshot время работы ограничивает именно TimeoutStartSec:
 # RuntimeMaxSec здесь systemd игнорирует (проверено systemd-analyze verify).
-TimeoutStartSec=1800
+# Это страховка от зависания, а не бюджет времени: разбор 513 постов занял
+# 28м05с, и прежние 1800 оставляли 6% запаса — любой лишний ретрай к
+# Anthropic упирался бы в лимит и давал тревогу о несуществующем сбое.
+TimeoutStartSec=3600
 # Конвейер — фоновая работа: дашборд и бот важнее.
 Nice=10
 IOSchedulingClass=idle
