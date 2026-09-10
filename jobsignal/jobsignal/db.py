@@ -63,6 +63,11 @@ class RawPost(Base):
     # оценивал бы вакансию по одному заголовку. Следующий прогон добирает
     # описание и снимает признак.
     awaiting_details = Column(Boolean, nullable=False, default=False)
+    # Счётчик неудачных догрузок описания — та же логика, что у
+    # parse_attempts. Без него вакансия, которую hh не отдаёт (заглушка со
+    # входом вместо страницы), висит в долгах вечно и каждый прогон съедает
+    # слот бюджета HH_DESC_LIMIT у тех, кого отдать ещё могут.
+    detail_attempts = Column(Integer, nullable=False, default=0)
     channel = relationship("Channel", back_populates="raw_posts")
     __table_args__ = (UniqueConstraint("channel_id", "tg_message_id"),)
 
