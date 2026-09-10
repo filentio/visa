@@ -725,9 +725,13 @@ def api_hh_apply_run():
 
     body: {send: bool, limit: int, confirm: bool}
       send=false (дефолт) — dry-run: hh.ru открывается, ничего не отправляется.
-      send=true           — боевой режим. В semi_auto требует confirm=true
-                            (кнопка в дашборде спрашивает подтверждение),
-                            в full_auto подтверждение не нужно.
+      send=true           — боевой режим, требует confirm=true при любом
+                            OUTREACH_MODE.
+    Подтверждение спрашивается и в full_auto. Клик по кнопке — не то же
+    намерение, что автоматическая отправка по правилам: у таймера есть свой
+    порог (HH_AUTO_THRESHOLD) и свой режим-выключатель, а кнопка отправляет
+    по общему порогу и прямо сейчас. Режим разрешает работать таймеру, а не
+    отменяет вопрос человеку.
     Число отправок всё равно ограничено общей квотой OUTREACH_PER_HOUR/DAY.
     """
     import threading
@@ -745,10 +749,10 @@ def api_hh_apply_run():
     if _HH_JOB["running"]:
         return jsonify({"ok": False, "error": "Прогон уже идёт"}), 409
 
-    if send and mode == OutreachMode.SEMI_AUTO.value and not confirm:
+    if send and not confirm:
         return jsonify({
-            "ok": False, "error": "confirm_required",
-            "message": "OUTREACH_MODE=semi_auto — отправка только с подтверждением",
+            "ok": False, "error": "confirm_required", "mode": mode,
+            "message": "Отправка по кнопке — только с подтверждением",
         }), 409
 
     if send:

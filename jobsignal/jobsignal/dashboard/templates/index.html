@@ -386,9 +386,16 @@ function renderHHReport(r){
 async function runHHApply(send){
   const limit=parseInt(document.getElementById('hh-limit').value)||null;
   const body={send:send,limit:limit};
-  if(send&&OUTREACH_MODE==='semi_auto'){
-    if(!confirm(`Режим semi_auto.\n\nОтправить реальные отклики на hh.ru?\n`+
-                `Бюджет прогона: ${limit} вакансий, но не больше общей квоты откликов.`)) return;
+  if(send){
+    // Спрашиваем в любом режиме, включая full_auto: клик мышью — другое
+    // намерение, чем автоматическая отправка по правилам. Порог у кнопки
+    // общий (MATCH_THRESHOLD), у таймера — повышенный.
+    const budget=limit?`${limit} вакансий`:'по умолчанию';
+    if(!confirm(`Отправить реальные отклики на hh.ru прямо сейчас?\n\n`+
+                `Режим: ${OUTREACH_MODE}. Бюджет прогона: ${budget}, `+
+                `но не больше общей квоты откликов.\n`+
+                `Очередь — по общему порогу показа, а не по повышенному `+
+                `порогу автоматических отправок.`)) return;
     body.confirm=true;
   }
   const st=document.getElementById('hh-status');
