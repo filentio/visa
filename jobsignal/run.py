@@ -22,6 +22,28 @@ COMMANDS = (
 )
 
 
+HH_LOCK_PATH = "/run/jobsignal-hh.lock"
+
+
+def _take_hh_lock():
+    """Взять замок на обращения к hh.ru.
+
+    Сбор по таймеру и отклик ходят на один адрес, который ddos-guard уже
+    держит на прицеле; одновременно им там делать нечего. Тот же файл берёт
+    flock(1) в юните конвейера — механизм один, так что замок общий.
+    Возвращает открытый файл (держать до конца работы) или None, если занято.
+    """
+    import fcntl
+
+    fh = open(HH_LOCK_PATH, "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.close()
+        return None
+    return fh
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     arg = sys.argv[2] if len(sys.argv) > 2 else None
@@ -139,8 +161,14 @@ def main():
 
         if cmd == "hh-preview":
             from jobsignal.agents.hh_apply import preview
-            result = preview(cfg, limit=opts.limit)
+            result = preview(cfg, limit=opts.limit)   # в сеть не ходит, замок не нужен
         else:
+            lock = _take_hh_lock()
+            if lock is None:
+                logging.error("[hh] сейчас идёт другая работа с hh.ru "
+                              "(сбор по таймеру или другой отклик) — "
+                              "замок %s занят, выходим", HH_LOCK_PATH)
+                sys.exit(1)
             from jobsignal.agents.hh_apply import HHApplyAgent
             result = HHApplyAgent(
                 cfg, dry_run=not opts.send, limit=opts.limit,

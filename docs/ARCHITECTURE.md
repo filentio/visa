@@ -293,8 +293,39 @@ https://api.hh.ru/vacancies?text=product+manager&area=1
 
 Правки делаются в деплое, потом копируются в клон и коммитятся оттуда.
 
-Запуск дашборда: `tmux new -s dash`, внутри
-`cd /opt/jobsignal_local && .venv/bin/python run.py serve`.
+### Запуск: systemd, не tmux
+
+tmux свою роль не выполнил — 10.09 сессия `dash` была жива, а дашборд в ней
+давно умер, и снаружи это выглядело как «не открывается». Всё живёт в
+systemd, юниты лежат в `deploy/systemd/` и копируются в
+`/etc/systemd/system/`:
+
+| юнит | что делает |
+|---|---|
+| `jobsignal-dashboard.service` | дашборд, `Restart=always` |
+| `jobsignal-bot.service` | телеграм-бот (long-polling), `Restart=always` |
+| `jobsignal-pipeline.service` | один прогон конвейера, `Type=oneshot` |
+| `jobsignal-pipeline.timer` | запускает конвейер каждый час в `*:07` |
+| `jobsignal-alert@.service` | цель `OnFailure=`: шлёт сбой в телеграм |
+
+Конвейер идёт под `Nice=10` и `IOSchedulingClass=idle`, чтобы не подтормаживать
+дашборд, и с `TimeoutStartSec=1800` — зависший прогон обрубается. Именно
+`TimeoutStartSec`, а не `RuntimeMaxSec`: у `Type=oneshot` последний
+игнорируется, `systemd-analyze verify` про это предупреждает.
+
+Смотреть: `journalctl -u jobsignal-pipeline -f`,
+`systemctl list-timers jobsignal*`.
+
+**Замок на hh.** Сбор по таймеру и отклик ходят на hh с одного адреса,
+который ddos-guard уже держит на прицеле. Оба берут `flock` на
+`/run/jobsignal-hh.lock`: конвейер — через `flock(1)` в `ExecStart`,
+`run.py hh-apply` — через `fcntl.flock` в коде. Кто не взял, тот выходит с
+кодом 1, а не ждёт.
+
+**База в WAL.** Конвейер пишет минутами подряд, дашборд и бот в это время
+читают. В прежнем режиме `delete` писатель блокировал читателей целиком;
+`busy_timeout` поднят до 15 секунд.
+
 Туннель с рабочей машины: `ssh -N -L 8090:127.0.0.1:5000 root@130.17.20.195`,
 далее `http://localhost:8090`.
 

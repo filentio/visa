@@ -1,0 +1,14 @@
+[Unit]
+Description=jobsignal: телеграм-бот уведомлений (long-polling)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/jobsignal_local
+ExecStart=/opt/jobsignal_local/.venv/bin/python run_polling.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

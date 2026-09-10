@@ -1,0 +1,27 @@
+[Unit]
+Description=jobsignal: конвейер (сбор, разбор, оценка)
+Documentation=file:///root/visa/docs/ARCHITECTURE.md
+After=network-online.target
+Wants=network-online.target
+OnFailure=jobsignal-alert@%n.service
+
+[Service]
+Type=oneshot
+# run.py делает load_dotenv("config/.env") относительным путём — без этого
+# каталога прогон стартует без ключей API.
+WorkingDirectory=/opt/jobsignal_local
+# flock: сбор и отклик ходят на hh с одного адреса, одновременно им там
+# делать нечего. Тот же файл берёт run.py для hh-apply.
+ExecStart=/usr/bin/flock -n /run/jobsignal-hh.lock /opt/jobsignal_local/.venv/bin/python run.py pipeline
+# Зависший прогон не должен занимать замок и слот таймера бесконечно.
+# У Type=oneshot время работы ограничивает именно TimeoutStartSec:
+# RuntimeMaxSec здесь systemd игнорирует (проверено systemd-analyze verify).
+TimeoutStartSec=1800
+# Конвейер — фоновая работа: дашборд и бот важнее.
+Nice=10
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

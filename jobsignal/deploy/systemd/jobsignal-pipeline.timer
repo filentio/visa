@@ -1,0 +1,14 @@
+[Unit]
+Description=jobsignal: запускать конвейер раз в час
+
+[Timer]
+# Не в ровный час: туда целится вся автоматика мира, включая чужие роботы hh.
+OnCalendar=*:07
+# Догнать пропущенный запуск после перезагрузки или простоя.
+Persistent=true
+# Размазать старт, чтобы обращения к hh не были секунда-в-секунду.
+RandomizedDelaySec=180
+Unit=jobsignal-pipeline.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,7 @@
+[Unit]
+Description=jobsignal: сообщить в телеграм о сбое %i
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/jobsignal_local
+ExecStart=/opt/jobsignal_local/.venv/bin/python deploy/alert_failed.py %i

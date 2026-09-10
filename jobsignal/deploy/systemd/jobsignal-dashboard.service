@@ -1,0 +1,15 @@
+[Unit]
+Description=jobsignal: дашборд (порт 5000, наружу закрыт ufw)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/jobsignal_local
+ExecStart=/opt/jobsignal_local/.venv/bin/python run.py serve
+# tmux эту роль не выполнил: сессия пережила процесс, дашборд молча лежал.
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

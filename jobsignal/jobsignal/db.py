@@ -2,7 +2,7 @@ from __future__ import annotations
 import enum
 from datetime import datetime, timezone
 from sqlalchemy import (
-    create_engine, Column, Integer, String, Text, Float,
+    create_engine, event, Column, Integer, String, Text, Float,
     DateTime, Boolean, ForeignKey, UniqueConstraint, Index, text,
     Enum as SAEnum
 )
@@ -154,7 +154,28 @@ class ChannelCandidate(Base):
 
 
 def get_engine(url: str = "sqlite:///./data/jobsignal.db"):
-    return create_engine(url, connect_args={"check_same_thread": False})
+    """Движок с WAL: конвейер по таймеру пишет минутами подряд, а дашборд и
+    бот в это время читают. В режиме delete писатель блокирует читателей
+    целиком, и они ловили бы «database is locked»; в WAL чтение идёт
+    параллельно записи. Режим сохраняется в самом файле базы, PRAGMA здесь —
+    чтобы он восстановился и на свежей базе.
+    """
+    engine = create_engine(
+        url,
+        # timeout — тот же busy_timeout, но на уровне драйвера: сколько ждать
+        # снятия блокировки, прежде чем сдаться. 5 секунд по умолчанию мало
+        # для прогона с частыми коммитами.
+        connect_args={"check_same_thread": False, "timeout": 15},
+    )
+
+    @event.listens_for(engine, "connect")
+    def _sqlite_pragmas(dbapi_conn, _record):  # noqa: ANN001
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA busy_timeout=15000")
+        cur.close()
+
+    return engine
 
 
 def get_session_factory(url: str = "sqlite:///./data/jobsignal.db"):
