@@ -328,6 +328,7 @@ class Attempt:
 @dataclass
 class RunReport:
     dry_run: bool
+    threshold: int = 0
     queue_size: int = 0
     attempt_budget: int = 0
     send_budget: int = 0
@@ -346,6 +347,7 @@ class RunReport:
         return {
             "agent": HHApplyAgent.name,
             "dry_run": self.dry_run,
+            "threshold": self.threshold,
             "queue_size": self.queue_size,
             "attempt_budget": self.attempt_budget,
             "send_budget": self.send_budget,
@@ -397,10 +399,15 @@ class HHApplyAgent(BaseAgent):
         limit: int | None = None,
         headless: bool | None = None,
         state_path: str | None = None,
+        threshold: int | None = None,
     ) -> None:
         super().__init__(config)
         self.dry_run = dry_run
         self.limit = limit
+        # Порог попадания в очередь. None — общий MATCH_THRESHOLD, то есть
+        # ровно то, что видно в дашборде. Автоматический прогон по таймеру
+        # передаёт свой, более высокий: см. run.py hh-apply --auto.
+        self.threshold = threshold
         self.headless = (
             headless
             if headless is not None
@@ -453,10 +460,16 @@ class HHApplyAgent(BaseAgent):
 
     # --- очередь ----------------------------------------------------------
 
+    def _effective_threshold(self) -> int:
+        """Порог очереди этого прогона: свой, если задан, иначе общий."""
+        if self.threshold is not None:
+            return self.threshold
+        return int(getattr(self.config.settings, "match_threshold", 0) or 0)
+
     def _queue(self, session) -> list[dict]:
         """Вакансии hh.ru, готовые к отклику: matched/drafted, живая ссылка,
         нет уже отправленного отклика по этому же каналу."""
-        threshold = int(getattr(self.config.settings, "match_threshold", 0) or 0)
+        threshold = self._effective_threshold()
         rows = (
             session.query(Vacancy)
             .filter(
@@ -539,6 +552,8 @@ class HHApplyAgent(BaseAgent):
                     continue
                 seen.add(item["key"])
             unique.append(item)
+        log.info("[hh_apply] очередь по порогу %d%%: %d вакансий",
+                 threshold, len(unique))
         return unique
 
     # --- письмо -----------------------------------------------------------
@@ -769,7 +784,8 @@ class HHApplyAgent(BaseAgent):
     # --- основной цикл ----------------------------------------------------
 
     async def _run_async(self) -> RunReport:
-        report = RunReport(dry_run=self.dry_run)
+        report = RunReport(dry_run=self.dry_run,
+                           threshold=self._effective_threshold())
         session = self._Session()
         try:
             self._ensure_log_table(session)

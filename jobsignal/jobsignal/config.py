@@ -77,6 +77,11 @@ class Settings(BaseSettings):
     # --- Поведение конвейера ---
     match_threshold: int = Field(default=70)  # минимальный % соответствия для показа
     outreach_mode: OutreachMode = Field(default=OutreachMode.SEMI_AUTO)
+    # Порог для автоматических отправок по таймеру (run.py hh-apply --auto).
+    # Выше match_threshold сознательно: то, что между порогами, видно в
+    # дашборде и уходит только с решения человека. Ручной прогон и кнопка в
+    # дашборде этого порога не знают — они и есть присмотр.
+    hh_auto_threshold: int = Field(default=80)
 
     # --- Хранилище ---
     database_url: str = Field(default=f"sqlite:///{DATA_DIR / 'jobsignal.db'}")

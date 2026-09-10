@@ -145,6 +145,7 @@ def main():
         hh-preview            — очередь и письма, hh.ru не открывается
         hh-apply              — DRY-RUN: открывает вакансии, ничего не отправляет
         hh-apply --send       — боевой режим (в пределах OUTREACH_PER_HOUR/DAY)
+        hh-apply --send --auto — то же по таймеру: свой порог, без присмотра
         --limit N             — бюджет прогона: сколько вакансий вообще открыть
         --show                — печатать письма целиком
         """
@@ -155,10 +156,33 @@ def main():
                         help="реально отправлять отклики (без флага — dry-run)")
         ap.add_argument("--show", action="store_true", help="печатать письма целиком")
         ap.add_argument("--headed", action="store_true", help="показать браузер")
+        ap.add_argument("--auto", action="store_true",
+                        help="прогон по таймеру: порог HH_AUTO_THRESHOLD и "
+                             "только при OUTREACH_MODE=full_auto")
         opts = ap.parse_args(sys.argv[2:])
 
-        from jobsignal.config import get_config
+        from jobsignal.config import get_config, OutreachMode
         cfg = get_config()
+
+        # Автоматический прогон отличается от ручного двумя вещами.
+        threshold = None
+        if opts.auto:
+            # Первое: он спрашивает разрешение у OUTREACH_MODE. Иначе вернуть
+            # систему под присмотр значило бы не поменять строчку в .env, а
+            # вспомнить про таймер и погасить его.
+            mode = cfg.settings.outreach_mode
+            if mode is not OutreachMode.FULL_AUTO:
+                logging.warning(
+                    "[hh_apply] OUTREACH_MODE=%s — автоматическая отправка "
+                    "выключена, прогон пропущен", mode.value)
+                sys.exit(0)
+            # Второе: планка выше. За ручной отправкой стоит человек, который
+            # посмотрел вакансию, за этой — никто.
+            threshold = int(cfg.settings.hh_auto_threshold)
+            logging.info(
+                "[hh_apply] автоматический прогон: порог %d%%; вакансии от "
+                "%d%% до %d%% остаются в дашборде и ждут решения руками",
+                threshold, cfg.settings.match_threshold, threshold - 1)
 
         if cmd == "hh-preview":
             from jobsignal.agents.hh_apply import preview
@@ -166,6 +190,14 @@ def main():
         else:
             lock = _take_hh_lock()
             if lock is None:
+                if opts.auto:
+                    # Для таймера это не сбой, а штатное расхождение: конвейер
+                    # ещё работает с hh. Своё время отправка возьмёт на
+                    # следующем срабатывании, тревогу поднимать незачем.
+                    logging.info("[hh_apply] замок %s занят — конвейер ещё "
+                                 "работает с hh.ru; пропускаю прогон",
+                                 HH_LOCK_PATH)
+                    sys.exit(0)
                 logging.error("[hh] сейчас идёт другая работа с hh.ru "
                               "(сбор по таймеру или другой отклик) — "
                               "замок %s занят, выходим", HH_LOCK_PATH)
@@ -173,7 +205,7 @@ def main():
             from jobsignal.agents.hh_apply import HHApplyAgent
             result = HHApplyAgent(
                 cfg, dry_run=not opts.send, limit=opts.limit,
-                headless=not opts.headed,
+                headless=not opts.headed, threshold=threshold,
             ).run()
 
         rate = result.get("rate", {})
@@ -182,6 +214,8 @@ def main():
         print(f"Лимиты: за час {rate.get('sent_hour')}/{rate.get('per_hour')}, "
               f"за сутки {rate.get('sent_day')}/{rate.get('per_day')}, "
               f"можно сейчас: {rate.get('allowed_now')}")
+        if result.get("threshold"):
+            print(f"Порог очереди: от {result['threshold']}%")
         if "attempt_budget" in result:
             print(f"Бюджет прогона: {result['attempt_budget']} вакансий | "
                   f"режим: {'DRY-RUN' if result['dry_run'] else 'БОЕВОЙ'}")
