@@ -336,7 +336,20 @@ def main():
         except Exception as exc:
             hh_error = exc
             logging.error("[hh] СБОР С HH.RU СЛОМАН: %s", exc, exc_info=True)
-        Orchestrator().run_once()
+        # Отказ провайдера LLM — не «сбой прогона», а остановка всей системы:
+        # без разбора и оценки очередь на отклик не пополняется. Ловим отдельно,
+        # чтобы в журнале была причина человеческим языком, а в телеграм ушла
+        # тревога через OnFailure. 14.09 такой отказ длился 30 часов и выглядел
+        # в журнале как обычные сбои разбора.
+        try:
+            from jobsignal.llm import LLMUnavailable
+            Orchestrator().run_once()
+        except LLMUnavailable as exc:
+            logging.error("[llm] ДОСТУП К МОДЕЛИ ЗАКРЫТ: %s", exc)
+            logging.error("[llm] Проверь баланс и ключ в консоли провайдера. "
+                          "Разбор и оценка стоят, отклики не пополняются. "
+                          "Попытки постам не списаны — прогон догонит сам.")
+            sys.exit(1)
         if hh_error is not None:
             logging.error("[hh] конвейер отработал, но вакансии с hh.ru не "
                           "собирались: %s", hh_error)

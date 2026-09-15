@@ -157,7 +157,7 @@ class Parser:
         self._sf = get_session_factory()
 
     def run(self, limit: Optional[int] = None) -> dict:
-        from jobsignal.llm import complete_text, LLMError
+        from jobsignal.llm import complete_text, LLMError, LLMUnavailable
         batch = int(os.environ.get("PARSER_BATCH_LIMIT", "200"))
         if limit:
             batch = limit
@@ -174,9 +174,18 @@ class Parser:
 
         parsed = vacancies = skipped = errors = retry = gave_up = 0
 
+        aborted = None
         for post in posts:
             try:
                 result, made = self._parse_post(post, session)
+            except LLMUnavailable as exc:
+                # Провайдер недоступен целиком (кончились деньги, отозван
+                # ключ). Попытку НЕ считаем и прогон прерываем: пост цел,
+                # виноват не он. Иначе повторяется 14.09 — за три часа
+                # простоя очередь теряет всё, до чего успела дотянуться.
+                session.rollback()
+                aborted = exc
+                break
             except Exception as exc:
                 log.warning("[parser] post %d error: %s", post.id, exc)
                 session.rollback()
@@ -219,6 +228,14 @@ class Parser:
         log.info("[parser] обработано: %d, вакансий: %d, отсеяно: %d, "
                  "сбоев: %d (повторим: %d, исчерпали попытки: %d)",
                  parsed, vacancies, skipped, errors, retry, gave_up)
+        if aborted is not None:
+            # Разобранное сохранено, но прогон неполный. Молча вернуть итог
+            # нельзя: именно так простой 14.09 выглядел как успех.
+            log.error("[parser] ПРОГОН ПРЕРВАН: провайдер LLM недоступен (%s). "
+                      "Осталось неразобранных постов: %d. Попытки не списаны — "
+                      "очередь восстановится сама, когда доступ вернётся.",
+                      aborted, len(posts) - parsed - errors)
+            raise aborted
         return summary
 
     def _parse_post(self, post: RawPost, session) -> tuple[str, int]:
@@ -229,7 +246,8 @@ class Parser:
         попыток.
         """
         from jobsignal.config import get_config
-        from jobsignal.llm import complete_text, LLMError, _loads_lenient_many
+        from jobsignal.llm import (complete_text, LLMError, LLMUnavailable,
+                                   _loads_lenient_many)
 
         text = (post.text or "").strip()
         if not text or len(text) < 30:
@@ -247,6 +265,10 @@ class Parser:
         try:
             raw = complete_text(SYSTEM, prompt, model, PARSER_MAX_TOKENS,
                                 tag=f"post#{post.id}")
+        except LLMUnavailable:
+            # Подкласс LLMError — пропускаем наверх до обработчика ниже, иначе
+            # отказ провайдера маскируется под сбой разбора этого поста.
+            raise
         except LLMError as exc:
             log.warning("[parser] LLM error post %d: %s", post.id, exc)
             return "error", 0

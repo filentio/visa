@@ -15,7 +15,7 @@ import logging
 from sqlalchemy import select
 
 from ..db import MatchScore, Vacancy, VacancyStatus, get_session_factory
-from ..llm import LLMError, complete_json
+from ..llm import LLMError, LLMUnavailable, complete_json
 from .base import BaseAgent
 
 log = logging.getLogger("jobsignal")
@@ -95,6 +95,13 @@ class MatcherAgent(BaseAgent):
                     data = complete_json(system, _vacancy_text(v), model=model,
                                          max_tokens=900, tag=f"vac#{v.id}",
                                          cache_system=True)
+                except LLMUnavailable as exc:
+                    # Доступа к провайдеру нет вообще — дальше по списку будет
+                    # ровно то же. Оценённое сохраняем, прогон обрываем громко.
+                    log.error("[matcher] ПРОГОН ПРЕРВАН: провайдер LLM "
+                              "недоступен (%s). Оценено до обрыва: %d", exc, scored)
+                    s.commit()
+                    raise
                 except LLMError as exc:
                     log.warning("[matcher] вакансия #%d: ошибка API (%s) — на ретрай", v.id, exc)
                     errors += 1

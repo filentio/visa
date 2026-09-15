@@ -29,6 +29,32 @@ class LLMError(Exception):
     """Транзиентная ошибка (сеть/лимит/сервер/токен) — стоит ретраить."""
 
 
+class LLMUnavailable(LLMError):
+    """Провайдер недоступен целиком: кончились деньги, ключ отозван, доступ закрыт.
+
+    Отличается от LLMError тем, что ретраить бессмысленно — сломан не запрос, а
+    доступ. Агенты обязаны на ней прерывать прогон, а не списывать попытку:
+    14.09 баланс кончился на 30 часов, каждый часовой прогон исправно считал
+    отказ сбоем разбора, и 255 постов выбили лимит попыток и выпали из очереди
+    навсегда. Пост был цел — сломан был провайдер.
+    """
+
+
+# Признаки отказа на уровне доступа, а не запроса. Сверяем по типу исключения и
+# по тексту: SDK для «кончились деньги» отдаёт обычный BadRequestError (400), и
+# отличить его от настоящей ошибки в запросе можно только по сообщению.
+_FATAL_TYPES = ("AuthenticationError", "PermissionDeniedError")
+_FATAL_TEXTS = ("credit balance", "billing", "insufficient_quota",
+                "authentication_error", "permission_error", "invalid x-api-key")
+
+
+def _is_unavailable(exc: Exception) -> bool:
+    if type(exc).__name__ in _FATAL_TYPES:
+        return True
+    low = str(exc).lower()
+    return any(t in low for t in _FATAL_TEXTS)
+
+
 # --- Anthropic ---
 
 def _get_client():
@@ -83,6 +109,8 @@ def _anthropic_text(system, user, model, max_tokens, tag="", cache_system=False)
             messages=[{"role": "user", "content": user}],
         )
     except Exception as exc:  # noqa: BLE001
+        if _is_unavailable(exc):
+            raise LLMUnavailable(str(exc)) from exc
         raise LLMError(str(exc)) from exc
     _log_usage(model, resp.usage, tag)
     return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
@@ -141,7 +169,9 @@ def _gigachat_token():
     except requests.RequestException as exc:
         raise LLMError(f"GigaChat OAuth недоступен: {exc}") from exc
     if r.status_code != 200:
-        raise LLMError(f"GigaChat OAuth HTTP {r.status_code}: {r.text[:200]}")
+        # 401/403 на OAuth — ключ не тот или отозван: ретрай не поможет.
+        cls = LLMUnavailable if r.status_code in (401, 403) else LLMError
+        raise cls(f"GigaChat OAuth HTTP {r.status_code}: {r.text[:200]}")
     data = r.json()
     exp = data.get("expires_at", 0) or 0
     if exp > 1e12:        # иногда приходит в миллисекундах
@@ -174,7 +204,9 @@ def _gigachat_chat(system, user, max_tokens):
         _giga_token["value"] = None  # токен протух — сбросим, ретрай перелогинится
         raise LLMError("GigaChat 401 (токен истёк) — повтор")
     if r.status_code != 200:
-        raise LLMError(f"GigaChat HTTP {r.status_code}: {r.text[:200]}")
+        # 402 — исчерпан оплаченный лимит, 401/403 — доступ закрыт.
+        cls = LLMUnavailable if r.status_code in (401, 402, 403) else LLMError
+        raise cls(f"GigaChat HTTP {r.status_code}: {r.text[:200]}")
     return r.json()["choices"][0]["message"]["content"]
 
 
