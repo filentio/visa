@@ -153,7 +153,6 @@ class ComposerAgent(BaseAgent):
 
 class Composer:
     def generate(self, vacancy, style: str = "metric_hook") -> str:
-        import pathlib
         best_profile = "Senior PM/PO"
         best_score = 0
         for sc in (getattr(vacancy, 'match_scores', None) or []):
@@ -162,13 +161,25 @@ class Composer:
             if score > best_score:
                 best_score = score
                 best_profile = prof
-        profile_map = {"Senior AI PM": "ai_pm", "CPO / Head of Product": "cpo", "Senior PM/PO": "pm"}
-        key = profile_map.get(best_profile, "pm")
-        cv_path = pathlib.Path("config") / f"cv_{key}.md"
-        cv_text = cv_path.read_text() if cv_path.exists() else ""
+        # Резюме берём из конфига, как это делает run() в этом же классе.
+        # Раньше здесь был свой путь pathlib.Path("config")/f"cv_{key}.md" с
+        # ручным profile_map, и две беды сразу: путь относительный (при другом
+        # рабочем каталоге файла нет), а профиль вне карты схлопывался в "pm".
+        # В обоих случаях cv_text молча становился пустой строкой — и модель,
+        # которой промпт запрещает выдумывать факты, всё равно была вынуждена
+        # их выдумать. Письмо рекрутёру с несуществующим опытом хуже, чем
+        # отсутствие письма, поэтому пустое резюме теперь ошибка.
+        from ..config import get_config
+        cfg = get_config()
+        cvmap = {p["name"]: p["cv_text"] for p in cfg.profiles}
+        cv_text = cvmap.get(best_profile) or ""
+        if not cv_text.strip():
+            raise ValueError(
+                f"нет текста резюме для профиля {best_profile!r} "
+                f"(есть: {', '.join(cvmap) or 'ни одного'}) — "
+                f"проверь config/profiles.yaml")
         # Раньше здесь бралось GIGACHAT_MODEL (по умолчанию "GigaChat") — у
         # Anthropic это 404 not_found_error, и кнопка «сгенерировать письмо» в
         # дашборде падала. Письмо — качество важнее цены, поэтому основная модель.
-        from ..config import get_config
-        model = get_config().settings.anthropic_model
+        model = cfg.settings.anthropic_model
         return generate_draft(vacancy, best_profile, cv_text, model, style=style)

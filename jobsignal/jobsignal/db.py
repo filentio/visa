@@ -172,7 +172,32 @@ class ChannelCandidate(Base):
     status = Column(String, default="pending")   # pending / added / rejected
 
 
-def get_engine(url: str = "sqlite:///./data/jobsignal.db"):
+def _default_url() -> str:
+    """Абсолютный путь к базе из настроек.
+
+    Раньше по умолчанию стоял относительный "sqlite:///./data/jobsignal.db", а
+    Settings.database_url (абсолютный, от корня проекта) не использовался
+    нигде. Из-за этого запуск не из каталога jobsignal/ — например
+    tools/rescore.py или fix_*.py — молча создавал ВТОРУЮ пустую базу (SQLite
+    создаёт файл, create_all наполняет его таблицами) и «ничего не находил»
+    вместо ошибки. Опаснее всего это в ratelimit: квота откликов считалась бы
+    по пустой таблице, то есть лимит просто не сработал бы.
+
+    Импорт внутри функции: config читает YAML и создаёт каталоги при импорте,
+    а db должен оставаться импортируемым сам по себе.
+    """
+    try:
+        from .config import get_config
+        return get_config().settings.database_url
+    except Exception:  # noqa: BLE001 — без настроек считаем путь сами
+        # Запасной путь тоже абсолютный, от расположения этого файла. Вернуть
+        # относительный значило бы сохранить ровно ту ошибку, ради которой
+        # всё это и делается: вторая пустая база при другом рабочем каталоге.
+        from pathlib import Path
+        return f"sqlite:///{Path(__file__).resolve().parent.parent / 'data' / 'jobsignal.db'}"
+
+
+def get_engine(url: str | None = None):
     """Движок с WAL: конвейер по таймеру пишет минутами подряд, а дашборд и
     бот в это время читают. В режиме delete писатель блокирует читателей
     целиком, и они ловили бы «database is locked»; в WAL чтение идёт
@@ -180,7 +205,7 @@ def get_engine(url: str = "sqlite:///./data/jobsignal.db"):
     чтобы он восстановился и на свежей базе.
     """
     engine = create_engine(
-        url,
+        url or _default_url(),
         # timeout — тот же busy_timeout, но на уровне драйвера: сколько ждать
         # снятия блокировки, прежде чем сдаться. 5 секунд по умолчанию мало
         # для прогона с частыми коммитами.
@@ -197,7 +222,7 @@ def get_engine(url: str = "sqlite:///./data/jobsignal.db"):
     return engine
 
 
-def get_session_factory(url: str = "sqlite:///./data/jobsignal.db"):
+def get_session_factory(url: str | None = None):
     engine = get_engine(url)
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)

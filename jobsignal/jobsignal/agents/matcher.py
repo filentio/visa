@@ -151,8 +151,13 @@ class MatcherAgent(BaseAgent):
                     skipped += 1
                     continue
 
-                v.match_score = best_score
-                v.match_reason = f"{best_name}: {best_reason}" if best_reason else best_name
+                # Раньше здесь лучший балл писался в v.match_score и
+                # v.match_reason. Таких колонок у Vacancy нет: SQLAlchemy молча
+                # клала значения в __dict__ инстанса, коммит их не сохранял, и
+                # никто их не читал. Лучший балл берётся запросом
+                # max(match_scores.score) — так это и делают дашборд, отправка
+                # и аналитика. Порог считается по локальной переменной и был
+                # верен всегда.
                 v.status = VacancyStatus.matched if best_score >= threshold else VacancyStatus.skipped
                 scored += 1
                 if v.status == VacancyStatus.matched:

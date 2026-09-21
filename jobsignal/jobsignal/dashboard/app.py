@@ -68,7 +68,10 @@ app.before_request(lambda: None)  # placeholder; auth applied per-route
 def _best_score(vacancy) -> tuple[int, str]:
     if not vacancy.match_scores:
         return 0, ""
-    best = max(vacancy.match_scores, key=lambda s: s.score)
+    # score в схеме nullable: код всегда пишет int, но одна строка с NULL из
+    # прошлого или из правки руками уронила бы сравнение в max() на TypeError,
+    # то есть всю страницу дашборда. Дешевле считать пустой балл нулём.
+    best = max(vacancy.match_scores, key=lambda s: s.score or 0)
     return best.score, best.profile_key
 
 
