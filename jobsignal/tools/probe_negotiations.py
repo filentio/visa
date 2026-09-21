@@ -17,6 +17,7 @@ requests, и здесь достаточно того же плюс cookies (Chr
 """
 from __future__ import annotations
 
+import html
 import json
 import os
 import re
@@ -95,7 +96,17 @@ def main() -> int:
         print("HTML сохранён в /tmp/negotiations.html, размер:", len(r.text))
         return 3
 
-    data = json.loads(m.group(1))
+    # unescape обязателен: hh отдаёт состояние с HTML-экранированием
+    # (&quot; вместо кавычек), и без этого шага json.loads падает на первом
+    # же ключе. Сборщик это делает (_extract_state), здесь было пропущено.
+    raw = html.unescape(m.group(1).strip())
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(f"состояние найдено ({len(raw)} симв.), но не разбирается: {exc}")
+        Path("/tmp/negotiations_state_raw.txt").write_text(raw)
+        print("сырой блок сохранён в /tmp/negotiations_state_raw.txt")
+        return 3
     print(f"\nключей в состоянии: {len(data)}")
     # Ищем, где лежит собственно список откликов: имя ключа заранее неизвестно.
     cands = [k for k in data
