@@ -181,7 +181,7 @@ class HHRepliesAgent:
         log.info("[hh_replies] наших отправленных откликов с номером hh: %d",
                  len(by_hh))
 
-        seen = matched = replied_new = unknown_state = 0
+        seen = matched = replied_new = unknown_state = silent = 0
         states: dict[str, int] = {}
         counters = {}
         page = 0
@@ -215,6 +215,16 @@ class HHRepliesAgent:
                     continue
                 matched += 1
                 if last == STATE_SILENT:
+                    # Отклик на hh есть и работодатель молчит. Это ЗНАНИЕ, и
+                    # его надо записать: без отметки «подтверждённое молчание»
+                    # неотличимо от «мы этот отклик вообще не видели», а таких
+                    # у нас 39 из 113 (hh не показывает удалённые). В первом
+                    # же разборе аналитики это дало долю ответов 5% у группы
+                    # 90+ против 19% у 70-79 — при том, что знаменатель у
+                    # первой состоял в основном из неизвестного.
+                    for app_rec in apps:
+                        app_rec.reply_state = STATE_SILENT
+                    silent += 1
                     continue
                 status = STATE_TO_STATUS.get(last)
                 if status is None:
@@ -247,13 +257,14 @@ class HHRepliesAgent:
             "seen": seen,
             "matched": matched,
             "replied_new": replied_new,
+            "silent": silent,
             "unknown_state": unknown_state,
             "states": states,
             "counters": counters,
         }
         log.info("[hh_replies] просмотрено %d, сопоставлено с базой %d, "
-                 "новых ответов %d, состояния: %s",
-                 seen, matched, replied_new, states)
+                 "новых ответов %d, подтверждённого молчания %d, состояния: %s",
+                 seen, matched, replied_new, silent, states)
         if seen and not matched:
             # Отклики на hh есть, но ни один не нашёлся у нас — значит
             # связывание по номеру вакансии сломано. Это поломка, а не ноль.
