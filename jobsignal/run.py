@@ -18,6 +18,7 @@ COMMANDS = (
     "hh-collect", "find-channels",          # NEW: search tgstat/telemetr
     "hh-apply", "hh-preview",                # NEW: автоотклик на hh.ru
     "hh-session",             # NEW: жива ли сессия hh.ru и надолго ли
+    "hh-replies",             # NEW: учёт ответов на отклики hh.ru
     "channels",               # NEW: list channels
     "pipeline", "status", "dashboard", "serve",
 )
@@ -354,6 +355,25 @@ def main():
             logging.error("[hh] конвейер отработал, но вакансии с hh.ru не "
                           "собирались: %s", hh_error)
             sys.exit(1)
+
+    elif cmd == "hh-replies":
+        # Учёт ответов. Отдельной командой, а не внутри pipeline: конвейер
+        # ходит на hh каждый час под замком, а список откликов меняется
+        # медленно — раз в сутки достаточно, и лишние обращения к сайту с
+        # одного адреса ни к чему.
+        from jobsignal.agents.hh_replies import HHRepliesAgent, HHRepliesBroken
+        try:
+            rep = HHRepliesAgent().run()
+        except HHRepliesBroken as exc:
+            logging.error("[hh_replies] УЧЁТ ОТВЕТОВ СЛОМАН: %s", exc)
+            sys.exit(1)
+        c = rep["counters"]
+        print(f"Откликов на hh: {c.get('all', '?')} | без ответа "
+              f"{c.get('awaiting', '?')} | отказ {c.get('discard', '?')} | "
+              f"приглашение {c.get('invitation', '?')} | собеседование "
+              f"{c.get('interview', '?')} | оффер {c.get('hired', '?')}")
+        print(f"Сопоставлено с базой: {rep['matched']} из {rep['seen']} | "
+              f"новых ответов записано: {rep['replied_new']}")
 
     elif cmd == "status":
         from jobsignal.db import get_session_factory, Channel, RawPost, Vacancy, Application, Application as Reply

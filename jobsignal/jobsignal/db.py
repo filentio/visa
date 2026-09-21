@@ -133,6 +133,11 @@ class Application(Base):
     created_at = Column(DateTime, nullable=False,
                         default=lambda: datetime.now(timezone.utc))
     replied_at = Column(DateTime)
+    # Что именно ответили, состоянием с hh: DISCARD | INVITATION | INTERVIEW |
+    # HIRED. Одного replied_at мало — он отвечает «ответили или нет», а отказ
+    # и приглашение в одну дату не помещаются, хотя для аналитики это разные
+    # исходы. Заполняет agents/hh_replies.py.
+    reply_state = Column(String(32))
     vacancy = relationship("Vacancy", back_populates="applications")
 
     # Частичные уникальные индексы вместо INSERT OR IGNORE: от повтора
