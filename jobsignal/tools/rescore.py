@@ -29,6 +29,10 @@ logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s INFO jobsignal: %(message)s",
                     datefmt="%H:%M:%S")
 
+# Python кладёт в sys.path каталог скрипта (tools/), а не текущий, поэтому
+# пакет jobsignal рядом не находится. run.py лежит в корне и этого не требует.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from dotenv import load_dotenv  # noqa: E402
 load_dotenv("config/.env")
 
