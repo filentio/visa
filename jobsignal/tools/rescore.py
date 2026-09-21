@@ -6,15 +6,17 @@
 печатает старый балл рядом с новым, чтобы решение о полной переоценке
 опиралось на числа.
 
-    .venv/bin/python tools/rescore.py --limit 20            # посмотреть, кого возьмёт
-    .venv/bin/python tools/rescore.py --limit 20 --apply    # переоценить
+    tools/rescore.py --limit 20                    # посмотреть, кого возьмёт
+    tools/rescore.py --limit 20 --apply            # переоценить
+    tools/rescore.py --min-score 70 --max-score 79 --apply   # очередь на решение
 
 Без --apply ничего не меняет. Старые баллы перед заменой сохраняются в
 /tmp/rescore_backup_<время>.json — восстановить вручную, если понадобится.
 
 Берём только то, что имеет смысл переоценивать: основные вакансии, по которым
-отклик ещё не ушёл. Историю переоценивать незачем — вакансии закрылись, а
-расход реальный.
+отклик ещё не ушёл, и с баллом от --min-score (по умолчанию 60). Историю
+переоценивать незачем — вакансии закрылись, а расход реальный; вакансии внизу
+списка переоценивать тоже незачем — они там и останутся.
 """
 from __future__ import annotations
 
@@ -43,8 +45,15 @@ from jobsignal.db import (Application, MatchScore, Vacancy,  # noqa: E402
                           VacancyStatus, get_session_factory)
 
 
-def pick(session, limit: int, days: int, source: str | None):
-    """Вакансии, которые стоит переоценить: свежие, основные, без отклика."""
+def pick(session, limit: int, days: int, source: str | None,
+         lo: int, hi: int):
+    """Вакансии, которые стоит переоценить: свежие, основные, без отклика.
+
+    Диапазон баллов обязателен по смыслу: переоценивать имеет смысл тех, у кого
+    ошибка чего-то стоит. Вакансия с баллом 3 после переоценки останется внизу,
+    а вызов будет потрачен — в первой же выборке по hh без фильтра набрались
+    Office Administrator и Senior Bioinformatics Scientist.
+    """
     q = (select(Vacancy)
          .options(selectinload(Vacancy.raw_post),
                   selectinload(Vacancy.match_scores))
@@ -53,7 +62,8 @@ def pick(session, limit: int, days: int, source: str | None):
                 ~Vacancy.applications.any(Application.sent_at.isnot(None))))
     if source:
         q = q.where(Vacancy.contact_type == source)
-    rows = session.execute(q).scalars().all()
+    rows = [v for v in session.execute(q).scalars().all()
+            if lo <= best(v) <= hi]
     # Сначала те, у кого исходный текст есть и он длиннее пересказа: именно у
     # них оценка и менялась. Вакансия без поста переоценку не изменит.
     rows.sort(key=lambda v: -(len((v.raw_post.text if v.raw_post else "") or "")))
@@ -76,17 +86,25 @@ def main() -> int:
                     help="насколько свежие вакансии брать (по умолчанию неделя)")
     ap.add_argument("--source", default=None,
                     help="contact_type: hh / tg / form / linkedin")
+    ap.add_argument("--min-score", type=int, default=60,
+                    help="нижняя граница текущего балла (по умолчанию 60: "
+                         "ниже переоценка ничего не решает)")
+    ap.add_argument("--max-score", type=int, default=100)
     ap.add_argument("--apply", action="store_true",
                     help="без него только показывает выборку")
     opts = ap.parse_args()
 
     sf = get_session_factory()
     session = sf()
-    vacs = pick(session, opts.limit, opts.days, opts.source)
+    vacs = pick(session, opts.limit, opts.days, opts.source,
+                opts.min_score, opts.max_score)
     if not vacs:
-        print("подходящих вакансий нет — проверь --days и --source")
+        print("подходящих вакансий нет — проверь --days, --source и "
+              "--min-score")
         return 1
 
+    print(f"выборка: балл {opts.min_score}-{opts.max_score}, "
+          f"за {opts.days} дней, источник {opts.source or 'любой'}\n")
     print(f"{'id':>6} {'балл':>5} {'пересказ':>9} {'полный текст':>13}  роль")
     for v in vacs:
         full = len((v.raw_post.text if v.raw_post else "") or "")
