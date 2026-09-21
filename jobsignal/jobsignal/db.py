@@ -91,6 +91,9 @@ class Vacancy(Base):
     draft_text = Column(Text)
     # contact_type: tg / hh / form / unknown
     contact_type = Column(String, default="unknown")
+    # Исходный пост. Нужен матчеру: description это пересказ парсера в одну
+    # фразу, а оценивать вакансию надо по её настоящему тексту.
+    raw_post = relationship("RawPost")
     match_scores = relationship(
         "MatchScore", back_populates="vacancy", cascade="all, delete-orphan"
     )

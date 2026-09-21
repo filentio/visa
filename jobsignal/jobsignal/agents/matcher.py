@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from ..db import MatchScore, Vacancy, VacancyStatus, get_session_factory
 from ..llm import LLMError, LLMUnavailable, complete_json
@@ -37,12 +38,25 @@ SYSTEM_TMPL = (
 
 
 def _vacancy_text(v: Vacancy) -> str:
+    """Текст вакансии для оценки — исходный пост, а не пересказ парсера.
+
+    Vacancy.description это «краткое описание обязанностей (1-2 предложения)»,
+    как прямо просит промпт парсера. Матчер читал именно его и оценивал
+    вакансию по одной фразе: замер 21.09 показал 184 знака в среднем у hh
+    против 2854 в исходном посте — пятнадцатикратная потеря. Все баллы,
+    накопленные до этой правки, посчитаны по пересказу.
+
+    Исходный текст лежит в raw_posts.text и есть у всех источников. Пересказ
+    остаётся тем, чем должен быть, — подписью для интерфейса.
+    """
+    full = (v.raw_post.text if v.raw_post is not None else None) or ""
+    body = full.strip() or (v.description or "")
     return (
         f"Роль: {v.role or '—'}\n"
         f"Компания: {v.company or '—'}\n"
         f"Локация: {v.location or '—'}\n"
         f"Зарплата: {v.salary or '—'}\n"
-        f"Описание: {(v.description or '—')[:DESC_CAP]}"
+        f"Описание: {body[:DESC_CAP] or '—'}"
     )
 
 
@@ -74,6 +88,9 @@ class MatcherAgent(BaseAgent):
             vacs = (
                 s.execute(
                     select(Vacancy)
+                    # Текст поста подтягиваем сразу: иначе на каждую вакансию
+                    # уходил бы отдельный запрос к raw_posts.
+                    .options(selectinload(Vacancy.raw_post))
                     .where(
                         Vacancy.is_primary.is_(True),
                         # NEW — ещё не оценивались; SKIPPED без балла — сбой парсинга, ретраим
