@@ -1,0 +1,28 @@
+[Unit]
+Description=jobsignal: учёт ответов на отклики hh.ru
+Documentation=file:///root/visa/docs/ROADMAP.md
+After=network-online.target
+Wants=network-online.target
+OnFailure=jobsignal-alert@%n.service
+
+[Service]
+Type=oneshot
+# run.py делает load_dotenv("config/.env") относительным путём.
+WorkingDirectory=/opt/jobsignal_local
+# Замок общий со сбором и отправкой: все трое ходят на hh.ru с одного адреса,
+# который ddos-guard держит на прицеле. Занятый замок — штатный пропуск
+# (код 75), а не поломка: список откликов меняется медленно, и пропущенные
+# сутки ничего не значат. Код 1 остаётся за настоящим сбоем разбора.
+ExecStart=/bin/sh -c 'flock -n -E 75 /run/jobsignal-hh.lock /opt/jobsignal_local/.venv/bin/python run.py hh-replies; rc=$$?; [ "$$rc" -eq 75 ] && echo "jobsignal: учёт ответов пропущен — замок занят, работа с hh.ru уже идёт"; exit "$$rc"'
+SuccessExitStatus=75
+# Десять страниц по запросу на каждую — прогон укладывается в полминуты.
+# Пять минут это страховка от зависшего запроса, а не бюджет времени:
+# висящий прогон держит общий замок и мешает сбору с отправкой.
+TimeoutStartSec=300
+Nice=10
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
