@@ -213,6 +213,16 @@ class HHRepliesAgent:
 
     def run(self) -> dict:
         cookies = _cookies()
+
+        # Сначала спросить, пускают ли вообще. Пережидание блокировки внутри
+        # прогона (три попытки, до пяти минут) рассчитано на короткий лимит;
+        # когда закрыт весь раздел, ждать нечего — 22.09 блокировка держалась
+        # часами, и прогон впустую висел бы каждую ночь.
+        from jobsignal import hh_session
+        blocked, why = hh_session.section_blocked()
+        if blocked:
+            raise HHBlocked(why)
+
         session = self._sf()
         _ensure_columns(session)
 

@@ -362,6 +362,10 @@ class RunReport:
     attempts: list[Attempt] = field(default_factory=list)
     stopped_reason: str = ""
     error: str = ""
+    # hh закрыл раздел кабинета для нашего адреса: прогон пропущен, ничего
+    # не сломано. Отдельно от error, чтобы дашборд и журнал не показывали
+    # блокировку как сбой отправки.
+    blocked: bool = False
 
     @property
     def applied(self) -> int:
@@ -381,8 +385,10 @@ class RunReport:
             "attempted": len(self.attempts),
             "applied": self.applied,
             "by_result": by_result,
-            "stopped_reason": self.stopped_reason,
+            "stopped_reason": self.stopped_reason or (
+                "hh закрыл раздел кабинета для нашего адреса" if self.blocked else ""),
             "error": self.error,
+            "blocked": self.blocked,
             "rate": rate_status(),
             "items": [a.as_dict() for a in self.attempts],
             "finished_at": datetime.now(timezone.utc).isoformat(),
@@ -886,6 +892,23 @@ class HHApplyAgent(BaseAgent):
             self._ensure_log_table(session)
             queue = self._queue(session)
             report.queue_size = len(queue)
+
+            # Ломиться в закрытый раздел бессмысленно и вредно. Таймер
+            # отправки срабатывает десять раз в час, и при непустой очереди
+            # каждый прогон поднимал бы Chromium ради гарантированного 403 —
+            # 288 попыток в сутки по заблокированному адресу. Это ровно то
+            # поведение, из-за которого блокировка и держится дольше.
+            # Проверка дешёвая: один запрос без cookies, без браузера.
+            if queue:
+                blocked, why = hh_session.section_blocked()
+                if blocked:
+                    log.warning("[hh_apply] прогон пропущен: %s", why)
+                    log.warning("[hh_apply] Очередь (%d) не теряется — уйдёт, "
+                                "когда hh снимет ограничение. Входить заново "
+                                "не нужно: 403 приходит и без cookies.",
+                                len(queue))
+                    report.blocked = True
+                    return report
 
             rate = rate_status(session)
             report.send_budget = 0 if self.dry_run else rate["allowed_now"]
