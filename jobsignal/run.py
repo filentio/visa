@@ -361,9 +361,20 @@ def main():
         # ходит на hh каждый час под замком, а список откликов меняется
         # медленно — раз в сутки достаточно, и лишние обращения к сайту с
         # одного адреса ни к чему.
-        from jobsignal.agents.hh_replies import HHRepliesAgent, HHRepliesBroken
+        from jobsignal.agents.hh_replies import (HHRepliesAgent, HHBlocked,
+                                                  HHRepliesBroken)
         try:
             rep = HHRepliesAgent().run()
+        except HHBlocked as exc:
+            # Блокировку прогон уже пережидал (три попытки с растущей паузой).
+            # Раз не отпустило — сказать стоит, но диагноз другой: чинить
+            # нечего, hh ограничил обращения с нашего адреса. Так упал ночной
+            # прогон 22.09, когда десять страниц уходили залпом без паузы.
+            logging.error("[hh_replies] HH ОГРАНИЧИЛ ОБРАЩЕНИЯ: %s", exc)
+            logging.error("[hh_replies] Код и сессия целы, чинить нечего. "
+                          "Учёт ответов за эти сутки пропущен, следующий "
+                          "прогон в 04:42 возьмёт своё.")
+            sys.exit(1)
         except HHRepliesBroken as exc:
             logging.error("[hh_replies] УЧЁТ ОТВЕТОВ СЛОМАН: %s", exc)
             sys.exit(1)

@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -70,6 +71,28 @@ STATE_TO_STATUS = {
 }
 
 
+# Пауза между страницами. Без неё десять страниц уходили одним залпом за
+# десять секунд, и ddos-guard отвечал 403 — ночной прогон 22.09 упал именно
+# так. Сборщик с hh держит те же 1,5 секунды (HH_PAGE_DELAY) и работает годами.
+PAGE_DELAY = float(os.environ.get("HH_REPLIES_PAGE_DELAY", "1.5"))
+
+# Сколько раз переждать блокировку внутри прогона и сколько ждать. Ограничение
+# снимается быстро, поэтому дешевле подождать, чем будить человека тревогой.
+BLOCK_RETRIES = int(os.environ.get("HH_REPLIES_BLOCK_RETRIES", "3"))
+BLOCK_BACKOFF = (30, 90, 180)
+
+
+class HHBlocked(RuntimeError):
+    """hh ограничил обращения с нашего адреса (403/429).
+
+    Отдельно от HHRepliesBroken намеренно: правило из docs/SERVICES.md —
+    «отказ внешней системы различается по смыслу: лимит, блокировка,
+    изменение структуры, исчезнувший объект; одинаково выглядящие отказы
+    лечатся по-разному». Блокировка лечится ожиданием, смена структуры —
+    правкой кода. Свалив их в одно, я получил тревогу с неверным диагнозом.
+    """
+
+
 class HHRepliesBroken(RuntimeError):
     """Структура страницы откликов изменилась либо сессия мертва.
 
@@ -102,6 +125,10 @@ def _fetch_page(cookies: dict, page: int) -> dict:
     if "account/login" in r.url or "auth" in r.url:
         raise HHRepliesBroken(
             "hh.ru перекинул на вход: сессия протухла, нужен новый state.json")
+    if r.status_code in (403, 429):
+        raise HHBlocked(
+            f"страница {page}: HTTP {r.status_code} — hh ограничил обращения "
+            f"с нашего адреса")
     r.raise_for_status()
     m = STATE_RE.search(r.text)
     if not m:
@@ -120,6 +147,29 @@ def _fetch_page(cookies: dict, page: int) -> dict:
             f"страница {page}: нет ключа applicantNegotiations — структура другая")
     return {"negotiations": neg,
             "counters": state.get("applicantNegotiationsCounters") or {}}
+
+
+def _fetch_page_patient(cookies: dict, page: int) -> dict:
+    """_fetch_page с паузой и ожиданием блокировки.
+
+    Блокировку пережидаем внутри прогона: она снимается за минуты, а прогон
+    раз в сутки, так что ждать дешевле, чем терять сутки учёта. Если не
+    отпустило за все попытки — отдаём HHBlocked наружу, и это уже повод
+    сказать человеку.
+    """
+    if page:
+        time.sleep(PAGE_DELAY)
+    for attempt in range(BLOCK_RETRIES + 1):
+        try:
+            return _fetch_page(cookies, page)
+        except HHBlocked as exc:
+            if attempt >= BLOCK_RETRIES:
+                raise
+            wait = BLOCK_BACKOFF[min(attempt, len(BLOCK_BACKOFF) - 1)]
+            log.warning("[hh_replies] %s — жду %d с (попытка %d из %d)",
+                        exc, wait, attempt + 1, BLOCK_RETRIES)
+            time.sleep(wait)
+    raise AssertionError("недостижимо")  # pragma: no cover
 
 
 def _parse_time(value: str | None) -> datetime | None:
@@ -188,7 +238,7 @@ class HHRepliesAgent:
         total_expected = None
 
         while page < MAX_PAGES:
-            data = _fetch_page(cookies, page)
+            data = _fetch_page_patient(cookies, page)
             neg = data["negotiations"]
             if page == 0:
                 counters = data["counters"].get("total") or {}
