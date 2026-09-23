@@ -577,8 +577,11 @@ def guard(probe_live: bool | None = None) -> SessionStatus:
 def report(st: SessionStatus) -> str:
     """Человекочитаемая сводка для CLI."""
     info = st.info
+    # BLOCKED обязателен: без него report() падал бы с KeyError именно в тот
+    # момент, когда им пользуются — когда что-то не работает.
     mark = {Level.OK: "✅ рабочая", Level.WARN: "🟡 доживает",
-            Level.DEAD: "🔴 не работает"}[st.level]
+            Level.DEAD: "🔴 не работает",
+            Level.BLOCKED: "🟠 адрес закрыт (сессия цела)"}[st.level]
     out = [
         f"Сессия hh.ru: {mark}",
         f"  {st.reason}",
