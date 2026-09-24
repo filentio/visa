@@ -120,8 +120,10 @@ def _cookies() -> dict:
 
 
 def _fetch_page(cookies: dict, page: int) -> dict:
+    from jobsignal import hh_session
     r = requests.get(NEGOTIATIONS_URL, params={"page": page},
-                     headers=HEADERS, cookies=cookies, timeout=30)
+                     headers=HEADERS, cookies=cookies,
+                     proxies=hh_session._requests_proxies(), timeout=30)
     if "account/login" in r.url or "auth" in r.url:
         raise HHRepliesBroken(
             "hh.ru перекинул на вход: сессия протухла, нужен новый state.json")

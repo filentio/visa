@@ -1082,7 +1082,11 @@ class HHApplyAgent(BaseAgent):
                 from playwright.async_api import async_playwright
 
                 self._pw = await async_playwright().start()
-                self._browser = await self._pw.chromium.launch(headless=agent.headless)
+                # Прокси только здесь и в учёте ответов: кабинет hh закрыт
+                # для адреса дата-центра, а публичный поиск проходит и так.
+                self._browser = await self._pw.chromium.launch(
+                    headless=agent.headless,
+                    proxy=hh_session.playwright_proxy())
                 state = str(agent.state_path) if agent.state_path.exists() else None
                 self._ctx = await self._browser.new_context(
                     storage_state=state,

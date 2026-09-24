@@ -83,6 +83,47 @@ BLOCK_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 
 
+def proxy_url() -> str | None:
+    """Прокси для обращений к личному кабинету hh, если задан.
+
+    Зачем. Замер 24.09: мы шлём к hh порядка двадцати запросов в час
+    (600 карточек поиска плюс 1-13 догрузок описаний за прогон) — темп не
+    менялся неделями. Значит закрытие раздела кабинета не за частоту, а по
+    адресу: hh давно и навсегда закрыл с этого сервера api.hh.ru, теперь к
+    нему добавился кабинет. Поиск остаётся публичным и работает.
+
+    Поэтому прокси нужен ТОЛЬКО кабинету: отправка откликов и учёт ответов —
+    это десятки запросов в сутки. Сбор через него гонять незачем, он и так
+    проходит, а лишний трафик через платный канал ни к чему.
+
+    Формат HH_PROXY: http://user:pass@host:port (или socks5://...). Пусто —
+    ходим напрямую, как раньше.
+    """
+    value = (os.environ.get("HH_PROXY") or "").strip()
+    return value or None
+
+
+def _requests_proxies() -> dict | None:
+    url = proxy_url()
+    return {"http": url, "https": url} if url else None
+
+
+def playwright_proxy() -> dict | None:
+    """Тот же прокси в виде, который принимает chromium.launch(proxy=...)."""
+    url = proxy_url()
+    if not url:
+        return None
+    from urllib.parse import urlsplit
+    p = urlsplit(url)
+    out: dict[str, str] = {"server": f"{p.scheme}://{p.hostname}"
+                                     + (f":{p.port}" if p.port else "")}
+    if p.username:
+        out["username"] = p.username
+    if p.password:
+        out["password"] = p.password
+    return out
+
+
 def section_blocked() -> tuple[bool, str]:
     """Закрыт ли раздел кабинета для нашего адреса — без всякой сессии.
 
@@ -101,6 +142,7 @@ def section_blocked() -> tuple[bool, str]:
         r = requests.get(BLOCK_PROBE_URL,
                          headers={"User-Agent": BLOCK_UA,
                                   "Accept-Language": "ru-RU,ru;q=0.9"},
+                         proxies=_requests_proxies(),
                          timeout=20, allow_redirects=True)
     except Exception as exc:  # noqa: BLE001 — проверка не должна ронять прогон
         return False, f"проверку блокировки выполнить не удалось: {exc}"
@@ -294,7 +336,8 @@ async def _probe_async(path: Path, headless: bool) -> tuple[bool, str]:
     from playwright.async_api import async_playwright
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=headless)
+        browser = await pw.chromium.launch(headless=headless,
+                                           proxy=playwright_proxy())
         try:
             ctx = await browser.new_context(
                 storage_state=str(path) if path.exists() else None,
