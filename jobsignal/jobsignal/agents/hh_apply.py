@@ -60,6 +60,11 @@ LOGIN_URL_MARKERS = hh_session.LOGIN_URL_MARKERS
 
 DEFAULT_STATE_PATH = hh_session.DEFAULT_STATE_PATH
 # Дефолтный бюджет предпросмотра: сколько вакансий показать, если --limit не задан.
+# Множитель на все ожидания в интерфейсе. 1.0 — прямой канал; с прокси
+# ставить 2.5-3. Ожидание отваливается по сроку, а не крутится вхолостую,
+# поэтому запас стоит только времени на реально медленных страницах.
+UI_SLOWDOWN = float(os.environ.get("HH_UI_SLOWDOWN", "1.0"))
+
 DEFAULT_DRY_LIMIT = 10
 # Сколько вакансий открыть на один слот отправки в боевом режиме и сколько
 # открыть максимум за прогон — см. _run_async, «бюджет попыток».
@@ -472,7 +477,7 @@ class HHApplyAgent(BaseAgent):
         self.attempts_per_send = int(
             os.environ.get("HH_ATTEMPTS_PER_SEND", str(DEFAULT_ATTEMPTS_PER_SEND))
         )
-        self.nav_timeout_ms = int(os.environ.get("HH_NAV_TIMEOUT_MS", "30000"))
+        self.nav_timeout_ms = int(os.environ.get("HH_NAV_TIMEOUT_MS", "60000"))
         self.screenshots_dir = Path(
             os.environ.get("HH_SCREENSHOTS_DIR", "data/hh_screenshots")
         )
@@ -1138,7 +1143,14 @@ class HHApplyAgent(BaseAgent):
         нескольких местах (шапка, тело, липкий блок), и первое совпадение в
         DOM часто скрыто — ожидание отваливалось по таймауту, хотя рабочая
         кнопка на странице была.
+
+        Все сроки ожидания домножаются на UI_SLOWDOWN. Числа по месту вызова
+        (1,5-6 секунд) подбирались на прямом канале; через резидентный прокси
+        страница рисуется заметно дольше, и 03.10 три вакансии из пяти ушли в
+        no_letter_field — письма были написаны, вакансии открыты, а поле
+        письма мы искали раньше, чем hh успевал его нарисовать.
         """
+        timeout *= UI_SLOWDOWN
         loc = page.locator(selector)
         deadline = asyncio.get_running_loop().time() + timeout
         while True:
