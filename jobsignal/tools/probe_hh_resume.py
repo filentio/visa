@@ -110,25 +110,44 @@ async def main() -> int:
             await page.wait_for_timeout(SETTLE_MS)
             return state_of(await page.content())
 
-        # Идентификаторы резюме — со страницы резюме.
-        st = await visit("https://hh.ru/applicant/resumes")
-        ids: list[str] = []
+        def keys_of(state: dict, label: str, url: str) -> None:
+            """Что вообще есть в состоянии страницы — без догадок об именах."""
+            print(f"\n=== {label}\n    {url}")
+            if not state:
+                print("    состояние не разобралось")
+                return
+            print(f"    ключей верхнего уровня: {len(state)}")
+            interesting = [k for k in sorted(state)
+                           if any(w in k.lower() for w in
+                                  ("resume", "vacanc", "feed", "suitable",
+                                   "similar", "recommend", "search"))]
+            for k in interesting:
+                v = state[k]
+                size = f"[{len(v)}]" if isinstance(v, (list, dict)) else ""
+                print(f"      {k}: {type(v).__name__}{size}")
+                if isinstance(v, dict) and len(v) <= 20:
+                    print(f"         ключи: {sorted(v)}")
+            if not interesting:
+                print(f"      ничего похожего; все ключи: {sorted(state)[:40]}")
 
-        def walk(node):
-            if isinstance(node, dict):
-                for k, v in node.items():
-                    if k in ("resumeId", "hash", "_attributes") and isinstance(v, (str, int)):
-                        sv = str(v)
-                        if len(sv) > 5 and sv not in ids:
-                            ids.append(sv)
-                    walk(v)
-            elif isinstance(node, list):
-                for x in node[:50]:
-                    walk(x)
+        # Идентификаторы резюме ищем и в состоянии, и прямо в разметке:
+        # имена ключей заранее неизвестны, а ссылка /resume/<hash> на странице
+        # резюме есть почти наверняка.
+        for url in ("https://hh.ru/applicant/resumes",
+                    "https://hh.ru/applicant/profile/me"):
+            st = await visit(url)
+            keys_of(st, "страница резюме", page.url)
+            body = await page.content()
+            found = sorted(set(re.findall(r"/resume/([0-9a-f]{20,})", body)))
+            nums = sorted(set(re.findall(r'"resumeId"\s*:\s*(\d{6,})', body)))
+            print(f"    ссылки /resume/<hash>: {found[:3] or '—'}")
+            print(f"    числовые resumeId:     {nums[:3] or '—'}")
+            if found or nums:
+                break
 
-        walk(st)
-        print(f"\nидентификаторы резюме: {ids[:5] or 'не нашлись'}")
+        ids = (found or []) + (nums or [])
         rid = ids[0] if ids else None
+        print(f"\nбудем пробовать с идентификатором: {rid or 'нет'}")
 
         best = 0
         checks = [
@@ -144,7 +163,11 @@ async def main() -> int:
             if not url:
                 print(f"\n=== {label}\n    пропущено: нет идентификатора резюме")
                 continue
-            best = max(best, report(label, url, await visit(url)))
+            st = await visit(url)
+            n = report(label, url, st)
+            if not n:
+                keys_of(st, f"{label} — что есть в состоянии", page.url)
+            best = max(best, n)
 
         await browser.close()
 
