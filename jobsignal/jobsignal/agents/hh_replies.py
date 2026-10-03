@@ -30,8 +30,8 @@ import html as htmlmod
 import json
 import logging
 import os
+import asyncio
 import re
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -76,23 +76,6 @@ STATE_TO_STATUS = {
 # так. Сборщик с hh держит те же 1,5 секунды (HH_PAGE_DELAY) и работает годами.
 PAGE_DELAY = float(os.environ.get("HH_REPLIES_PAGE_DELAY", "1.5"))
 
-# Сколько раз переждать блокировку внутри прогона и сколько ждать. Ограничение
-# снимается быстро, поэтому дешевле подождать, чем будить человека тревогой.
-BLOCK_RETRIES = int(os.environ.get("HH_REPLIES_BLOCK_RETRIES", "3"))
-BLOCK_BACKOFF = (30, 90, 180)
-
-
-class HHBlocked(RuntimeError):
-    """hh ограничил обращения с нашего адреса (403/429).
-
-    Отдельно от HHRepliesBroken намеренно: правило из docs/SERVICES.md —
-    «отказ внешней системы различается по смыслу: лимит, блокировка,
-    изменение структуры, исчезнувший объект; одинаково выглядящие отказы
-    лечатся по-разному». Блокировка лечится ожиданием, смена структуры —
-    правкой кода. Свалив их в одно, я получил тревогу с неверным диагнозом.
-    """
-
-
 class HHRepliesBroken(RuntimeError):
     """Структура страницы откликов изменилась либо сессия мертва.
 
@@ -119,59 +102,87 @@ def _cookies() -> dict:
     return jar
 
 
-def _fetch_page(cookies: dict, page: int) -> dict:
-    from jobsignal import hh_session
-    r = requests.get(NEGOTIATIONS_URL, params={"page": page},
-                     headers=HEADERS, cookies=cookies,
-                     proxies=hh_session._requests_proxies(), timeout=30)
-    if "account/login" in r.url or "auth" in r.url:
-        raise HHRepliesBroken(
-            "hh.ru перекинул на вход: сессия протухла, нужен новый state.json")
-    if r.status_code in (403, 429):
-        raise HHBlocked(
-            f"страница {page}: HTTP {r.status_code} — hh ограничил обращения "
-            f"с нашего адреса")
-    r.raise_for_status()
-    m = STATE_RE.search(r.text)
+def _parse_state(text: str, page: int) -> dict:
+    """Достать состояние страницы из HTML. Источник — браузер или HTTP."""
+    m = STATE_RE.search(text)
     if not m:
         raise HHRepliesBroken(
             f"страница {page}: блок HH-Lux-InitialState не найден "
-            f"({len(r.text)} симв.) — hh сменил разметку")
-    try:
-        # unescape обязателен: hh отдаёт состояние с &quot; вместо кавычек.
-        state = json.loads(htmlmod.unescape(m.group(1).strip()))
-    except json.JSONDecodeError as exc:
+            f"({len(text)} симв.) — hh сменил разметку")
+    raw = m.group(1).strip()
+    for candidate in (raw, htmlmod.unescape(raw)):
+        # Из HTTP приходит экранированный JSON (&quot;), из page.content()
+        # браузера — как повезёт: DOM декодирует сущности, сериализация их
+        # возвращает. Пробуем оба варианта вместо догадок.
+        try:
+            state = json.loads(candidate)
+            break
+        except json.JSONDecodeError:
+            continue
+    else:
         raise HHRepliesBroken(
-            f"страница {page}: состояние не разбирается как JSON: {exc}") from exc
+            f"страница {page}: состояние не разбирается как JSON")
     neg = state.get("applicantNegotiations")
     if not isinstance(neg, dict):
         raise HHRepliesBroken(
-            f"страница {page}: нет ключа applicantNegotiations — структура другая")
+            f"страница {page}: нет ключа applicantNegotiations. Если в ответе "
+            f"{len(text)} симв. и ключей около 65 — это заглушка ddos-guard, "
+            f"значит проверку на JavaScript пройти не удалось")
     return {"negotiations": neg,
             "counters": state.get("applicantNegotiationsCounters") or {}}
 
 
-def _fetch_page_patient(cookies: dict, page: int) -> dict:
-    """_fetch_page с паузой и ожиданием блокировки.
+async def _collect_async(max_pages: int) -> list[dict]:
+    """Обойти страницы откликов настоящим браузером.
 
-    Блокировку пережидаем внутри прогона: она снимается за минуты, а прогон
-    раз в сутки, так что ждать дешевле, чем терять сутки учёта. Если не
-    отпустило за все попытки — отдаём HHBlocked наружу, и это уже повод
-    сказать человеку.
+    Почему не requests. 03.10 выяснилось, что ddos-guard на разделе кабинета
+    требует пройти проверку на JavaScript: и обычный requests, и подмена
+    TLS-отпечатка под Chrome (curl_cffi) получают 403 с заглушкой на 410 КБ —
+    одинаково с дата-центра и с резидентного московского адреса. Настоящий
+    Chromium через тот же резидентный прокси проходит.
+
+    Нужны ОБА условия: браузер и не-серверный адрес (HH_PROXY). Поодиночке
+    не работает ни одно — проверено всеми четырьмя сочетаниями.
     """
-    if page:
-        time.sleep(PAGE_DELAY)
-    for attempt in range(BLOCK_RETRIES + 1):
+    from playwright.async_api import async_playwright
+    from jobsignal import hh_session
+
+    path = _state_path()
+    out: list[dict] = []
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            headless=True, proxy=hh_session.playwright_proxy())
         try:
-            return _fetch_page(cookies, page)
-        except HHBlocked as exc:
-            if attempt >= BLOCK_RETRIES:
-                raise
-            wait = BLOCK_BACKOFF[min(attempt, len(BLOCK_BACKOFF) - 1)]
-            log.warning("[hh_replies] %s — жду %d с (попытка %d из %d)",
-                        exc, wait, attempt + 1, BLOCK_RETRIES)
-            time.sleep(wait)
-    raise AssertionError("недостижимо")  # pragma: no cover
+            ctx = await browser.new_context(
+                storage_state=str(path) if path.exists() else None,
+                locale="ru-RU", viewport={"width": 1440, "height": 900})
+            ctx.set_default_timeout(
+                int(os.environ.get("HH_NAV_TIMEOUT_MS", "60000")))
+            page_obj = await ctx.new_page()
+            n = 0
+            while n < max_pages:
+                if n:
+                    await asyncio.sleep(PAGE_DELAY)
+                url = f"{NEGOTIATIONS_URL}?page={n}"
+                await page_obj.goto(url, wait_until="domcontentloaded")
+                if any(mark in page_obj.url for mark in hh_session.LOGIN_URL_MARKERS):
+                    raise HHRepliesBroken(
+                        "hh.ru перекинул на вход: сессия протухла, "
+                        "нужен новый state.json")
+                data = _parse_state(await page_obj.content(), n)
+                out.append(data)
+                total_pages = int(data["negotiations"].get("pageCount") or 1)
+                n += 1
+                if n >= total_pages or not data["negotiations"].get("topicList"):
+                    break
+            # Куки продлеваются на каждом визите — сохраняем рабочую сессию.
+            try:
+                await ctx.storage_state(path=str(path))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("[hh_replies] state.json не сохранён: %s", exc)
+        finally:
+            await browser.close()
+    return out
 
 
 def _parse_time(value: str | None) -> datetime | None:
@@ -214,16 +225,10 @@ class HHRepliesAgent:
         self._sf = get_session_factory()
 
     def run(self) -> dict:
-        cookies = _cookies()
-
-        # Сначала спросить, пускают ли вообще. Пережидание блокировки внутри
-        # прогона (три попытки, до пяти минут) рассчитано на короткий лимит;
-        # когда закрыт весь раздел, ждать нечего — 22.09 блокировка держалась
-        # часами, и прогон впустую висел бы каждую ночь.
-        from jobsignal import hh_session
-        blocked, why = hh_session.section_blocked()
-        if blocked:
-            raise HHBlocked(why)
+        # Страницы забираем заранее, одним браузером: открывать и закрывать
+        # Chromium на каждую страницу дорого, а держать его запущенным, пока
+        # идёт запись в базу, незачем.
+        pages_data = asyncio.run(_collect_async(MAX_PAGES))
 
         session = self._sf()
         _ensure_columns(session)
@@ -246,11 +251,9 @@ class HHRepliesAgent:
         seen = matched = replied_new = unknown_state = silent = 0
         states: dict[str, int] = {}
         counters = {}
-        page = 0
         total_expected = None
 
-        while page < MAX_PAGES:
-            data = _fetch_page_patient(cookies, page)
+        for page, data in enumerate(pages_data):
             neg = data["negotiations"]
             if page == 0:
                 counters = data["counters"].get("total") or {}
@@ -306,11 +309,6 @@ class HHRepliesAgent:
                     if vac is not None:
                         vac.status = status
             session.commit()
-
-            pages = int(neg.get("pageCount") or 1)
-            page += 1
-            if page >= pages:
-                break
 
         session.close()
 

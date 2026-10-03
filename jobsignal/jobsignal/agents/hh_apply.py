@@ -893,22 +893,12 @@ class HHApplyAgent(BaseAgent):
             queue = self._queue(session)
             report.queue_size = len(queue)
 
-            # Ломиться в закрытый раздел бессмысленно и вредно. Таймер
-            # отправки срабатывает десять раз в час, и при непустой очереди
-            # каждый прогон поднимал бы Chromium ради гарантированного 403 —
-            # 288 попыток в сутки по заблокированному адресу. Это ровно то
-            # поведение, из-за которого блокировка и держится дольше.
-            # Проверка дешёвая: один запрос без cookies, без браузера.
-            if queue:
-                blocked, why = hh_session.section_blocked()
-                if blocked:
-                    log.warning("[hh_apply] прогон пропущен: %s", why)
-                    log.warning("[hh_apply] Очередь (%d) не теряется — уйдёт, "
-                                "когда hh снимет ограничение. Входить заново "
-                                "не нужно: 403 приходит и без cookies.",
-                                len(queue))
-                    report.blocked = True
-                    return report
+            # Здесь стояла проверка section_blocked() на requests: она должна
+            # была экономить запуски Chromium при блокировке. 03.10 выяснилось,
+            # что ddos-guard требует проверку на JavaScript, и requests получает
+            # 403 ВСЕГДА — а настоящий браузер через резидентный прокси
+            # проходит. То есть сторож запрещал ровно то, что работает.
+            # Убран: решает сам браузер.
 
             rate = rate_status(session)
             report.send_budget = 0 if self.dry_run else rate["allowed_now"]

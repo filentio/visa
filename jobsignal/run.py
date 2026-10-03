@@ -361,24 +361,9 @@ def main():
         # ходит на hh каждый час под замком, а список откликов меняется
         # медленно — раз в сутки достаточно, и лишние обращения к сайту с
         # одного адреса ни к чему.
-        from jobsignal.agents.hh_replies import (HHRepliesAgent, HHBlocked,
-                                                  HHRepliesBroken)
+        from jobsignal.agents.hh_replies import HHRepliesAgent, HHRepliesBroken
         try:
             rep = HHRepliesAgent().run()
-        except HHBlocked as exc:
-            # Код 76 — «пропуск по блокировке», а не сбой: юнит объявляет его
-            # успешным (SuccessExitStatus), поэтому OnFailure не срабатывает и
-            # тревога в телеграм не уходит. Иначе она приходила бы каждую ночь
-            # всё время блокировки — и человек перестал бы читать тревоги
-            # вообще, включая настоящие. Молчаливым отказ при этом не
-            # становится: про блокировку сообщает ежечасная проверка сессии
-            # (hh_session.guard → notify с уровнем BLOCKED), у неё своё
-            # правило «одна тревога на ALERT_REPEAT_H часов».
-            logging.error("[hh_replies] HH ОГРАНИЧИЛ ОБРАЩЕНИЯ: %s", exc)
-            logging.error("[hh_replies] Код и сессия целы, чинить нечего. "
-                          "Учёт ответов за эти сутки пропущен, следующий "
-                          "прогон возьмёт своё.")
-            sys.exit(76)
         except HHRepliesBroken as exc:
             logging.error("[hh_replies] УЧЁТ ОТВЕТОВ СЛОМАН: %s", exc)
             sys.exit(1)

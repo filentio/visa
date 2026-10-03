@@ -72,7 +72,6 @@ class Level(str, enum.Enum):
     OK = "ok"          # сессия рабочая
     WARN = "warn"      # cookie доживает последние дни
     DEAD = "dead"      # войти не получится: файла нет, побит, истёк или разлогинили
-    BLOCKED = "blocked"  # раздел закрыт ddos-guard: сессия ни при чём
 
 
 # Раздел личного кабинета, на котором проверяем блокировку. Поиск вакансий
@@ -124,34 +123,19 @@ def playwright_proxy() -> dict | None:
     return out
 
 
-def section_blocked() -> tuple[bool, str]:
-    """Закрыт ли раздел кабинета для нашего адреса — без всякой сессии.
-
-    Ключ к различению: запрос идёт БЕЗ cookies. Гостя hh переводит на вход
-    (это 200 или редирект), а заблокированному адресу ddos-guard отдаёт 403.
-    Раз cookies не участвуют, ответ 403 не может означать «сессия протухла».
-
-    Зачем: 22.09 проба сессии упала по таймауту, и тревога посоветовала
-    войти заново — с телефоном, SMS и капчей. На деле 403 от ddos-guard
-    приходил и с cookies, и без них, то есть новый state.json получил бы
-    тот же отказ. Ровно тот случай, от которого предостерегает правило в
-    docs/SERVICES.md: одинаково выглядящие отказы лечатся по-разному.
-    """
-    import requests
-    try:
-        r = requests.get(BLOCK_PROBE_URL,
-                         headers={"User-Agent": BLOCK_UA,
-                                  "Accept-Language": "ru-RU,ru;q=0.9"},
-                         proxies=_requests_proxies(),
-                         timeout=20, allow_redirects=True)
-    except Exception as exc:  # noqa: BLE001 — проверка не должна ронять прогон
-        return False, f"проверку блокировки выполнить не удалось: {exc}"
-    server = (r.headers.get("server") or "").lower()
-    if r.status_code in (403, 429):
-        who = "ddos-guard" if "ddos-guard" in server else server or "неизвестно кто"
-        return True, (f"раздел кабинета закрыт для нашего адреса: HTTP "
-                      f"{r.status_code} от {who} даже без cookies")
-    return False, f"раздел кабинета отвечает HTTP {r.status_code} — адрес не закрыт"
+# Здесь была section_blocked() — проверка «закрыт ли раздел для нашего
+# адреса» обычным requests без cookies. Она различала протухшую сессию и
+# блокировку и в тот момент была права: ручной вход действительно не помог бы.
+#
+# 03.10 выяснилось, что различать нечего. ddos-guard на разделе кабинета
+# требует пройти проверку на JavaScript, поэтому requests получает 403 ВСЕГДА —
+# и при живой сессии тоже. Как признак блокировки это бесполезно, а как сторож
+# перед запуском браузера вредно: запрещает ровно то, что работает.
+# Проверено все четыре сочетания: дата-центр и резидентный московский адрес,
+# обычный requests и подмена TLS-отпечатка под Chrome — везде 403 с заглушкой
+# на 410 КБ. Настоящий Chromium через резидентный прокси проходит.
+#
+# Единственная рабочая проверка доступа — живая проба браузером (probe ниже).
 
 
 def state_path() -> Path:
@@ -465,16 +449,8 @@ def status(probe_live: bool | None = None, headless: bool = True) -> SessionStat
         if not verdict:
             st.reason = "hh пустил на страницу для своих — сессия рабочая"
     else:
-        # Прежде чем объявлять сессию мёртвой — спросить, пускают ли вообще.
-        # Проба ходит с cookies, поэтому блокировку адреса она не отличает
-        # от разлогина: и то и другое выглядит как «не пустили».
-        blocked, why = section_blocked()
-        if blocked:
-            st.level = Level.BLOCKED
-            st.reason = why
-        else:
-            st.level = Level.DEAD
-            st.reason = detail
+        st.level = Level.DEAD
+        st.reason = detail
         st.last_probe_at = _parse(journal["last_probe_at"])
     write_journal(journal)
     return st
@@ -508,9 +484,7 @@ def _howto() -> str:
 
 def _message(st: SessionStatus) -> str:
     info = st.info
-    if st.level is Level.BLOCKED:
-        head = "🟠 <b>jobsignal: hh закрыл нам личный кабинет</b>"
-    elif st.level is Level.DEAD:
+    if st.level is Level.DEAD:
         head = "🔴 <b>jobsignal: сессия hh.ru не работает</b>"
     else:
         head = "🟡 <b>jobsignal: сессия hh.ru скоро кончится</b>"
@@ -520,24 +494,6 @@ def _message(st: SessionStatus) -> str:
     if st.last_alive_at:
         lines.append(f"Последний раз пускали: {human_time(st.last_alive_at)} "
                      f"({human_delta(_now() - st.last_alive_at)} назад)")
-    if st.level is Level.BLOCKED:
-        # Здесь инструкция по входу вредна: она стоит получаса с телефоном,
-        # SMS и капчей, а новый state.json получит ровно тот же 403.
-        lines += [
-            "",
-            "Пока так: отклики на hh.ru не уходят и ответы не считаются, "
-            "очередь копится. Сбор вакансий и телеграм-часть работают — "
-            "поиск ddos-guard не трогает.",
-            "",
-            "<b>Входить заново НЕ нужно.</b> Проверено запросом без cookies: "
-            "403 приходит и без них, то есть дело не в сессии, а в адресе "
-            "сервера. Новый вход получит тот же отказ.",
-            "",
-            "Что делать: подождать. Блокировка снимается сама, обычно за "
-            "часы. Если держится дольше суток — снижать темп обращений "
-            "к hh (HH_PAGE_DELAY, реже таймеры) либо менять адрес.",
-        ]
-        return "\n".join(lines)
     if st.level is Level.DEAD:
         lines += [
             "",
@@ -620,11 +576,8 @@ def guard(probe_live: bool | None = None) -> SessionStatus:
 def report(st: SessionStatus) -> str:
     """Человекочитаемая сводка для CLI."""
     info = st.info
-    # BLOCKED обязателен: без него report() падал бы с KeyError именно в тот
-    # момент, когда им пользуются — когда что-то не работает.
     mark = {Level.OK: "✅ рабочая", Level.WARN: "🟡 доживает",
-            Level.DEAD: "🔴 не работает",
-            Level.BLOCKED: "🟠 адрес закрыт (сессия цела)"}[st.level]
+            Level.DEAD: "🔴 не работает"}[st.level]
     out = [
         f"Сессия hh.ru: {mark}",
         f"  {st.reason}",
