@@ -1175,6 +1175,20 @@ class HHApplyAgent(BaseAgent):
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
             path = self.screenshots_dir / f"{stamp}-{vid}-{tag}.png"
             await self._page.screenshot(path=str(path), full_page=False)
+            # Рядом — список data-qa, которые реально есть на странице.
+            # По снимку видно глазами, что происходит, но не видно, как
+            # называются элементы; а именно переименование data-qa ломало
+            # отклик уже дважды. Полную разметку не пишем: это сотни килобайт
+            # на вакансию, а нужен только перечень опор.
+            try:
+                marks = await self._page.eval_on_selector_all(
+                    "[data-qa]",
+                    "els => Array.from(new Set(els.map(e => e.getAttribute('data-qa'))))")
+                (path.with_suffix(".data-qa.txt")).write_text(
+                    f"{self._page.url}\n\n" + "\n".join(sorted(marks or [])),
+                    encoding="utf-8")
+            except Exception as exc:  # noqa: BLE001 — диагностика не критична
+                log.debug("[hh_apply] список data-qa не сохранён: %s", exc)
             return str(path)
         except Exception as exc:  # noqa: BLE001 — скриншот диагностический
             log.debug("[hh_apply] скриншот не сохранён: %s", exc)
