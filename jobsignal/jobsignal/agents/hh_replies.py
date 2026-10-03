@@ -132,6 +132,40 @@ def _parse_state(text: str, page: int) -> dict:
             "counters": state.get("applicantNegotiationsCounters") or {}}
 
 
+# Сколько ждать, пока ddos-guard выполнит свою проверку и отдаст настоящую
+# страницу, и сколько раз перезагрузить, если не дождались.
+CHALLENGE_WAIT_MS = int(os.environ.get("HH_CHALLENGE_WAIT_MS", "25000"))
+CHALLENGE_TRIES = int(os.environ.get("HH_CHALLENGE_TRIES", "3"))
+
+# Ждём не загрузку документа, а появление самих данных в состоянии страницы.
+# Иначе забираем заглушку: проверка ddos-guard выполняется скриптом уже ПОСЛЕ
+# domcontentloaded и только потом подменяет страницу на настоящую. Первый
+# прогон 03.10 именно так и получил 1 МБ без applicantNegotiations.
+_READY_JS = """() => {
+  const t = document.getElementById('HH-Lux-InitialState');
+  return !!t && t.innerHTML.includes('applicantNegotiations');
+}"""
+
+
+async def _goto_patient(page_obj, url: str, page_no: int) -> str:
+    """Открыть страницу и дождаться настоящих данных, а не заглушки."""
+    last = ""
+    for attempt in range(1, CHALLENGE_TRIES + 1):
+        await page_obj.goto(url, wait_until="domcontentloaded")
+        try:
+            await page_obj.wait_for_function(_READY_JS, timeout=CHALLENGE_WAIT_MS)
+            return await page_obj.content()
+        except Exception:  # noqa: BLE001 — таймаут ожидания, не ошибка кода
+            last = await page_obj.content()
+            log.warning("[hh_replies] страница %d: данных нет через %d с "
+                        "(попытка %d из %d, %d симв.) — проверка ddos-guard "
+                        "ещё идёт, перезагружаю",
+                        page_no, CHALLENGE_WAIT_MS // 1000, attempt,
+                        CHALLENGE_TRIES, len(last))
+            await asyncio.sleep(3)
+    return last
+
+
 async def _collect_async(max_pages: int) -> list[dict]:
     """Обойти страницы откликов настоящим браузером.
 
@@ -164,12 +198,12 @@ async def _collect_async(max_pages: int) -> list[dict]:
                 if n:
                     await asyncio.sleep(PAGE_DELAY)
                 url = f"{NEGOTIATIONS_URL}?page={n}"
-                await page_obj.goto(url, wait_until="domcontentloaded")
+                content = await _goto_patient(page_obj, url, n)
                 if any(mark in page_obj.url for mark in hh_session.LOGIN_URL_MARKERS):
                     raise HHRepliesBroken(
                         "hh.ru перекинул на вход: сессия протухла, "
                         "нужен новый state.json")
-                data = _parse_state(await page_obj.content(), n)
+                data = _parse_state(content, n)
                 out.append(data)
                 total_pages = int(data["negotiations"].get("pageCount") or 1)
                 n += 1
