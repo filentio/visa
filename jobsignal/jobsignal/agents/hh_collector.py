@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import html as htmlmod
 import json
+import asyncio
 import logging
 import os
 import re
@@ -58,6 +59,27 @@ HEADERS = {
 HH_PAGES = int(os.environ.get("HH_PAGES", "1"))
 # Потолок догрузок описаний за прогон: это по HTTP-запросу на вакансию.
 HH_DESC_LIMIT = int(os.environ.get("HH_DESC_LIMIT", "150"))
+
+# ── подбор, который hh делает сам под резюме ─────────────────────────────────
+# Поиск по ключевым словам даёт около 300 вакансий в неделю, и это главное
+# ограничение системы: вакансий с баллом от 80 в очереди 391, а отправить
+# можно 7 — автоотклик умеет только hh. Подбор под резюме идёт тем же каналом,
+# который уже работает целиком, и расширяет пул без нового риска.
+#
+# Адрес найден разведкой 03.10 (tools/probe_hh_resume.py): лента подходящих и
+# «похожие вакансии» данных в состоянии страницы не содержат — они на новой
+# вёрстке и подгружают всё отдельно. А вот обычный поиск с привязкой к резюме
+# отдаёт тот же vacancySearchResult.vacancies, что и поиск по словам, со всеми
+# пятью ключами для _card_to_item. Поэтому разбор переиспользуется как есть.
+RESUME_FEED_URL = "https://hh.ru/search/vacancy"
+# Страниц подбора за прогон, по 50 вакансий. 0 — источник выключен.
+HH_RESUME_PAGES = int(os.environ.get("HH_RESUME_PAGES", "2"))
+# Хеш резюме. Пусто — найдём сами на странице профиля (лишняя загрузка).
+HH_RESUME_HASH = (os.environ.get("HH_RESUME_HASH") or "").strip()
+RESUME_HASH_RE = re.compile(r"/resume/([0-9a-f]{20,})")
+PROFILE_URL = "https://hh.ru/applicant/profile/me"
+# Сколько ждать, пока ddos-guard выполнит проверку и отдаст настоящую страницу.
+SETTLE_MS = int(os.environ.get("HH_SETTLE_MS", "8000"))
 # Паузы, чтобы не выглядеть перебором каталога.
 PAGE_DELAY = float(os.environ.get("HH_PAGE_DELAY", "1.5"))
 DESC_DELAY = float(os.environ.get("HH_DESC_DELAY", "0.7"))
@@ -232,6 +254,72 @@ def _card_to_item(card: dict) -> Optional[dict]:
         "snippet": {},
         "published_at": published,
     }
+
+
+async def _resume_feed_async(pages: int) -> list[dict]:
+    """Карточки подбора под резюме. Нужны браузер и прокси.
+
+    Страница для своих, а ddos-guard на таких требует проверку на JavaScript:
+    requests получает заглушку независимо от адреса и отпечатка (проверено
+    03.10 всеми четырьмя сочетаниями). Поэтому Chromium с HH_PROXY — тот же
+    путь, которым ходят отправка и учёт ответов.
+    """
+    from playwright.async_api import async_playwright
+    from jobsignal import hh_session
+
+    state_file = hh_session.state_path()
+    cards: list[dict] = []
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            headless=True, proxy=hh_session.playwright_proxy())
+        try:
+            ctx = await browser.new_context(
+                storage_state=str(state_file) if state_file.exists() else None,
+                locale="ru-RU", viewport={"width": 1440, "height": 900})
+            ctx.set_default_timeout(int(os.environ.get("HH_NAV_TIMEOUT_MS", "60000")))
+            page_obj = await ctx.new_page()
+
+            async def load(url: str) -> str:
+                await page_obj.goto(url, wait_until="domcontentloaded")
+                await page_obj.wait_for_timeout(SETTLE_MS)
+                return await page_obj.content()
+
+            rhash = HH_RESUME_HASH
+            if not rhash:
+                m = RESUME_HASH_RE.search(await load(PROFILE_URL))
+                if not m:
+                    raise HHStructureChanged(
+                        "подбор под резюме: на странице профиля нет ссылки "
+                        "/resume/<хеш> — не от чего отталкиваться. Задай "
+                        "HH_RESUME_HASH в config/.env")
+                rhash = m.group(1)
+                log.info("[hh] хеш резюме для подбора: %s…", rhash[:12])
+
+            for n in range(pages):
+                url = (f"{RESUME_FEED_URL}?resume={rhash}&from=resumelist"
+                       f"&items_on_page=50&page={n}")
+                state = _extract_state(await load(url), f"подбор стр. {n}")
+                result = state.get("vacancySearchResult")
+                if not isinstance(result, dict):
+                    raise HHStructureChanged(
+                        f"подбор стр. {n}: нет vacancySearchResult "
+                        f"(ключей {len(state)}) — либо сменилась структура, "
+                        f"либо мы не залогинены")
+                chunk = result.get("vacancies")
+                if not isinstance(chunk, list):
+                    raise HHStructureChanged(
+                        f"подбор стр. {n}: vacancySearchResult.vacancies не "
+                        f"список ({type(chunk).__name__})")
+                cards.extend(chunk)
+                if not chunk:
+                    break
+        finally:
+            await browser.close()
+    return cards
+
+
+def fetch_resume_feed(pages: int) -> list[dict]:
+    return asyncio.run(_resume_feed_async(pages))
 
 
 def _fetch_search_page(params: dict, page: int) -> list[dict]:
@@ -425,6 +513,36 @@ class HHCollector:
 
             log.info("[hh] '%s' → %d карточек", search_params.get("text"), found_here)
 
+        # Подбор под резюме — второй источник в том же канале. Его отказ не
+        # должен ронять сбор по ключевым словам: это разные пути, и поиск по
+        # словам работает без сессии, а подбор без неё невозможен. Поэтому
+        # ловим отдельно и сообщаем громко, но прогон продолжаем.
+        feed_cards = 0
+        feed_error = None
+        if HH_RESUME_PAGES > 0:
+            try:
+                for card in fetch_resume_feed(HH_RESUME_PAGES):
+                    feed_cards += 1
+                    cards_total += 1
+                    item = _card_to_item(card)
+                    if not item:
+                        continue
+                    vac_id = int(item["id"])
+                    if vac_id in seen_ids or vac_id in existing:
+                        continue
+                    seen_ids.add(vac_id)
+                    fresh.append(item)
+                log.info("[hh] подбор под резюме → %d карточек", feed_cards)
+                if feed_cards == 0:
+                    # Пустой подбор при живой сессии — не «вакансий нет», а
+                    # сломанный разбор: hh подбирает всегда.
+                    log.error("[hh] ПОДБОР ПОД РЕЗЮМЕ ВЕРНУЛ ПУСТО — так не "
+                              "бывает при живой сессии, разбор сломан")
+            except Exception as exc:  # noqa: BLE001 — не роняем сбор по словам
+                feed_error = exc
+                log.error("[hh] подбор под резюме не отработал: %s", exc,
+                          exc_info=True)
+
         # Ноль по одному запросу — бывает. Ноль по всем сразу или полный отказ
         # сети означает поломку: именно так выглядел мёртвый сбор с конца июня.
         if requests_failed == len(self.searches):
@@ -478,7 +596,9 @@ class HHCollector:
                   "walled": details["walled"],
                   "details_gone": details["gone"],
                   "details_gave_up": details["gave_up"],
-                  "requests_failed": requests_failed}
+                  "requests_failed": requests_failed,
+                  "resume_feed": feed_cards,
+                  "resume_feed_error": str(feed_error) if feed_error else None}
         log.info("[hh] добавлено вакансий: %d (описаний загружено: %d)",
                  added, descriptions)
         return result
