@@ -344,6 +344,52 @@ def _fetch_search_page(params: dict, page: int) -> list[dict]:
     return cards
 
 
+# Где в vacancyView лежит описание. Список, а не одно место: 03.10 hh
+# переложил его из vacancyView.description в vacancyView.vacancyFull.description,
+# и догрузка встала — 148 страниц открылись и разобрались, а описание не
+# досталось ни из одной. Новые пути дописывать В НАЧАЛО.
+DESCRIPTION_PATHS = (
+    ("vacancyFull", "description"),
+    ("description",),
+)
+
+
+def _by_path(node: dict, path: tuple[str, ...]):
+    for key in path:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return node if isinstance(node, str) and node.strip() else None
+
+
+def _find_description(view: dict, vac_id: int) -> Optional[str]:
+    """Описание из vacancyView по известным путям, иначе — поиском.
+
+    Поиск вглубь нужен не ради надёжности любой ценой, а чтобы следующий
+    переезд поля не останавливал сбор на сутки: мы возьмём описание и ГРОМКО
+    скажем, где оно теперь лежит, чтобы путь дописали в DESCRIPTION_PATHS.
+    """
+    for path in DESCRIPTION_PATHS:
+        found = _by_path(view, path)
+        if found:
+            return found
+
+    stack: list[tuple[dict, str]] = [(view, "vacancyView")]
+    while stack:
+        node, where = stack.pop()
+        for key, value in node.items():
+            spot = f"{where}.{key}"
+            if (key == "description" and isinstance(value, str)
+                    and len(value.strip()) > 200):
+                log.error("[hh] вакансия %d: описание найдено в %s — путь "
+                          "сменился, допиши его в DESCRIPTION_PATHS",
+                          vac_id, spot)
+                return value
+            if isinstance(value, dict):
+                stack.append((value, spot))
+    return None
+
+
 def _fetch_description(vac_id: int) -> Optional[str]:
     """Полный текст вакансии со страницы. Без него матчер судит по названию."""
     r = requests.get(HH_VACANCY_URL.format(vac_id), headers=HEADERS, timeout=25)
@@ -360,7 +406,7 @@ def _fetch_description(vac_id: int) -> Optional[str]:
     state = _extract_state(r.text, f"вакансия {vac_id}")
     view = state.get("vacancyView")
     if isinstance(view, dict):
-        return _clean_html(view.get("description"))
+        return _clean_html(_find_description(view, vac_id))
     if state.get("proxyPageLayout") == WALL_LAYOUT:
         raise HHVacancyWalled(
             f"вакансия {vac_id}: hh отдал заглушку со входом вместо вакансии"
