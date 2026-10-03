@@ -297,12 +297,30 @@ def _track_fingerprint(journal: dict, info: SessionInfo) -> dict:
 
 # ── живая проба ──────────────────────────────────────────────────────────
 
+# Признаки гостя и своего НА САМОЙ СТРАНИЦЕ. Переброса на /account/login
+# недостаточно: 03.10 выяснилось, что hh его больше не делает — отдаёт тот же
+# адрес в гостевом виде, с кнопками «Войти» и «Создать резюме» в шапке. Проба
+# при этом рапортовала «сессия рабочая», а отклики уходили в no_letter_field,
+# потому что гостю показывают форму «оставьте телефон» вместо письма.
+GUEST_SELECTORS = ('[data-qa="login"]', 'text="Войти"', 'text="Создать резюме"')
+OWNER_SELECTORS = ('[data-qa="mainmenu_profileAndResumes"]',
+                   '[data-qa="mainmenu_applicantProfilePage"]',
+                   '[data-qa="mainmenu_negotiations"]')
+# Сколько ждать, пока ddos-guard выполнит проверку и отдаст настоящую страницу.
+SETTLE_MS = int(os.environ.get("HH_SETTLE_MS", "8000"))
+
+
 async def check_page(page) -> tuple[bool, str]:
     """Жива ли сессия в уже открытой странице Playwright.
 
     Единственный источник правды о логине для всего проекта: hh_apply
-    зовёт эту же функцию. Опираемся на поведение, а не на вёрстку — гостя
-    hh редиректит с /applicant/resumes на /account/login.
+    зовёт эту же функцию.
+
+    Судим по СОДЕРЖИМОМУ, а не по адресу. Раньше критерием был переброс на
+    /account/login — опора на поведение казалась надёжнее вёрстки, и дважды
+    спасала при редизайне меню. Но hh перестал перебрасывать: гостю отдаётся
+    та же страница с кнопкой «Войти». Проверка стала давать ложное «жива», и
+    система двое суток считала мёртвую сессию рабочей.
     """
     try:
         await page.goto(LOGIN_PROBE_URL, wait_until="domcontentloaded")
@@ -313,7 +331,24 @@ async def check_page(page) -> tuple[bool, str]:
         return False, f"hh редиректит на логин ({url}) — сессия разлогинена"
     if "hh.ru" not in url:
         return False, f"неожиданный редирект на {url}"
-    return True, url
+
+    # Проверка ddos-guard выполняется скриптом уже после domcontentloaded и
+    # только потом подменяет страницу на настоящую.
+    await page.wait_for_timeout(SETTLE_MS)
+
+    owner = [sel for sel in OWNER_SELECTORS if await page.locator(sel).count()]
+    guest = [sel for sel in GUEST_SELECTORS if await page.locator(sel).count()]
+    if owner:
+        return True, f"{url} — меню соискателя на месте"
+    if guest:
+        return False, (f"{url} отдан в ГОСТЕВОМ виде (кнопка входа на "
+                       f"странице) — cookies есть, но hh их не признаёт: "
+                       f"сессию погасили, нужен новый вход")
+    # Ни того ни другого: вёрстка сменилась либо страница не догрузилась.
+    # Молчать нельзя — иначе снова будем считать неизвестность исправностью.
+    return False, (f"{url}: на странице нет ни меню соискателя, ни кнопки "
+                   f"входа — опоры проверки устарели, посмотри глазами "
+                   f"(tools/probe_login.py)")
 
 
 async def _probe_async(path: Path, headless: bool) -> tuple[bool, str]:
