@@ -349,6 +349,9 @@ def _fetch_search_page(params: dict, page: int) -> list[dict]:
 # и догрузка встала — 148 страниц открылись и разобрались, а описание не
 # досталось ни из одной. Новые пути дописывать В НАЧАЛО.
 DESCRIPTION_PATHS = (
+    # Фактическое место на 03.10 — его нашёл поиск вглубь и сам сообщил в
+    # журнал. Проверено на 150 вакансиях одного прогона.
+    ("vacancyFull", "vacancy", "description"),
     ("vacancyFull", "description"),
     ("description",),
 )
