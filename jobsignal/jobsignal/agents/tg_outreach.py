@@ -16,7 +16,10 @@
 — и тогда решение про автоматизацию будет опираться на замер, а не на догадку.
 
 Кого НЕ берём: контакты-каналы и агрегаторы (см. tg_contacts), вакансии без
-оценки и те, по которым отклик уже есть.
+оценки, те, по которым отклик уже есть, и — главное — контакты, которым уже
+писали руками. Последнее проверяется по самому телеграму (см. tg_sent): в
+первой же пачке все пять карточек оказались повтором, потому что система
+знала только про свои отправки.
 """
 from __future__ import annotations
 
@@ -29,6 +32,7 @@ from sqlalchemy import func, select
 from jobsignal.db import (Application, MatchScore, Vacancy, VacancyStatus,
                           get_session_factory, utcnow)
 from jobsignal.tg_contacts import is_personal, mass_handles
+from jobsignal.tg_sent import TGSentUnavailable, sent_handles
 
 log = logging.getLogger("jobsignal")
 
@@ -74,12 +78,34 @@ class TGOutreachAgent:
 
             personal = [(v, sc) for v, sc in rows
                         if is_personal(v.recruiter_handle, mass)]
-            queue = personal[:batch]
+
+            # Кому уже писали — спрашиваем у телеграма. Наша база знает
+            # только про отправки через систему, а человек писал руками
+            # задолго до неё. Если телеграм недоступен — пачку НЕ показываем:
+            # предложить повтор хуже, чем не предложить ничего, и человек
+            # перестанет доверять карточкам.
+            try:
+                already = sent_handles()
+            except TGSentUnavailable as exc:
+                log.error("[tg_outreach] ОТМЕНА: не проверить, кому уже "
+                          "писали (%s). Без этой проверки пачка состоит из "
+                          "повторов.", exc)
+                return {"agent": self.name, "queue": len(personal),
+                        "shown": 0, "offered": 0, "failed": 0,
+                        "blocked": str(exc)}
+
+            fresh = [(v, sc) for v, sc in personal
+                     if (v.recruiter_handle or "").lstrip("@").lower()
+                     not in already]
+            queue = fresh[:batch]
             log.info("[tg_outreach] очередь по порогу %d%%: %d вакансий "
-                     "(с живым контактом %d, показываю %d)",
-                     THRESHOLD, len(rows), len(personal), len(queue))
+                     "(с живым контактом %d, из них не писали %d, "
+                     "показываю %d)",
+                     THRESHOLD, len(rows), len(personal), len(fresh),
+                     len(queue))
             if not queue:
-                return {"agent": self.name, "queue": 0, "offered": 0}
+                return {"agent": self.name, "queue": 0, "shown": 0,
+                        "offered": 0, "failed": 0}
 
             composer = Composer()
             offered = failed = 0
@@ -129,5 +155,5 @@ class TGOutreachAgent:
         # В очереди — ВСЯ пачка, а не показанная часть: иначе итоговая строка
         # говорит «очередь 5» при девяноста восьми ожидающих, и кажется, что
         # работа кончилась.
-        return {"agent": self.name, "queue": len(personal), "shown": len(queue),
+        return {"agent": self.name, "queue": len(fresh), "shown": len(queue),
                 "offered": offered, "failed": failed}
