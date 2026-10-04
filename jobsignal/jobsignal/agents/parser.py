@@ -37,6 +37,17 @@ _NOT_TG_PATTERNS = [
 _NOT_TG_RE = re.compile("|".join(_NOT_TG_PATTERNS), re.IGNORECASE)
 
 
+# Почтовые домены: из адреса вида name@gmail.com модель отдавала обрубок
+# «@gmail», и он проходил как телеграм-контакт. Замер 04.10: 71 вакансия с
+# @gmail и 50 с @yandex — 121 вакансия числилась доступной для отклика, а
+# писать там некому. Поиск по тексту ниже ловил бы то же самое.
+MAIL_DOMAINS = {
+    "gmail", "yandex", "ya", "mail", "list", "bk", "inbox", "internet",
+    "rambler", "outlook", "hotmail", "icloud", "me", "proton", "protonmail",
+    "yahoo", "aol", "gmx", "web", "corp", "company", "example",
+}
+
+
 def _normalize_handle(raw: Optional[str]) -> Optional[str]:
     """
     Return clean @handle if it's a real TG username, else None.
@@ -50,6 +61,8 @@ def _normalize_handle(raw: Optional[str]) -> Optional[str]:
         return None
     # strip leading @
     clean = raw.lstrip("@")
+    if clean.lower() in MAIL_DOMAINS:
+        return None
     if _TG_HANDLE_RE.match(clean):
         return f"@{clean}"
     return None
