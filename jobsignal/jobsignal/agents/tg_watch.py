@@ -58,6 +58,34 @@ STATE = Path(os.environ.get("TG_WATCH_STATE", "data/tg_watch.json"))
 
 PREVIEW = int(os.environ.get("TG_WATCH_PREVIEW", "600"))
 
+# Боты, которым готовим черновик ответа. Не все подряд: hh_rabota_bot шлёт
+# уведомления, отвечать там нечего, а ГигаРекрутер ведёт интервью.
+DRAFT_BOTS = {
+    h.strip().lstrip("@").lower()
+    for h in (os.environ.get("TG_DRAFT_BOTS") or "giga_recruiter_bot").split(",")
+    if h.strip()
+}
+# Файл с историями — единственный источник фактов для ответа.
+STORIES = Path(os.environ.get("TG_STORIES", "config/cv_stories.md"))
+# Сколько последних сообщений диалога давать для связности.
+CONTEXT_MSGS = int(os.environ.get("TG_DRAFT_CONTEXT", "6"))
+
+DRAFT_SYSTEM = (
+    "Ты помогаешь кандидату отвечать рекрутёру в переписке. Пишешь ЧЕРНОВИК "
+    "ответа от первого лица, который человек прочитает и отправит сам.\n\n"
+    "ГЛАВНОЕ ПРАВИЛО: бери факты, числа и названия ТОЛЬКО из базы историй "
+    "ниже. Ничего не добавляй от себя. Если в базе нет нужного — так и напиши "
+    "одной строкой: «НЕТ ДАННЫХ: <чего не хватает>», и дальше ответь тем, что "
+    "есть. Выдуманная деталь в переписке с рекрутёром хуже, чем её отсутствие: "
+    "её проверят на собеседовании.\n\n"
+    "Как писать: по делу, без воды и канцелярита, деловым разговорным языком. "
+    "Конкретные числа из базы приводи. Если вопрос про опыт, которого нет — "
+    "скажи об этом прямо и назови смежный опыт, как в разделе «честные "
+    "границы». Объём — под вопрос: на короткий вопрос короткий ответ.\n\n"
+    "Без приветствий в начале, если переписка уже идёт. Без подписи. "
+    "Только текст сообщения.\n\n=== БАЗА ИСТОРИЙ ===\n{stories}"
+)
+
 
 class TGWatchBroken(RuntimeError):
     """Сторож не может работать: нет сессии или ключей."""
@@ -103,6 +131,47 @@ def _notify(who: str, title: str, text: str, buttons: list[str]) -> None:
     _send("\n".join(lines))
 
 
+def _make_draft(history: list[tuple[str, str]]) -> str | None:
+    """Черновик ответа на последний вопрос. None — если нечем или не вышло."""
+    if not STORIES.exists():
+        log.warning("[tg_watch] нет файла историй %s — черновик не делаю", STORIES)
+        return None
+    try:
+        stories = STORIES.read_text(encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[tg_watch] файл историй не читается: %s", exc)
+        return None
+
+    lines = [f"{'Я' if mine else 'Рекрутёр'}: {text}" for mine, text in history]
+    user = ("Переписка (последние сообщения, снизу самое новое):\n\n"
+            + "\n\n".join(lines)
+            + "\n\nНапиши черновик моего ответа на последнее сообщение.")
+    try:
+        from jobsignal.config import get_config
+        from jobsignal.llm import complete_text
+        model = get_config().settings.anthropic_model
+        # cache_system=True: база историй одна и та же, а она тут основной
+        # объём — со второго вопроса за пять минут читается из кэша.
+        return complete_text(DRAFT_SYSTEM.replace("{stories}", stories),
+                             user, model=model, max_tokens=1500,
+                             tag="tg_draft", cache_system=True).strip()
+    except Exception as exc:  # noqa: BLE001 — черновик не критичен
+        log.warning("[tg_watch] черновик не составлен: %s", exc)
+        return None
+
+
+def _send_draft(who: str, draft: str) -> None:
+    from jobsignal.agents.notify_bot import _send
+
+    warn = ""
+    if "НЕТ ДАННЫХ" in draft:
+        warn = ("\n\n⚠️ <i>В базе историй не хватает фактов — проверь "
+                "отмеченное место перед отправкой.</i>")
+    _send(f"✍️ <b>Черновик ответа для @{html.escape(who)}</b>\n"
+          f"<i>Прочитай, поправь если надо, отправь сам.</i>\n\n"
+          f"<pre>{html.escape(draft)}</pre>{warn}")
+
+
 async def _run_async() -> dict:
     try:
         from telethon import TelegramClient
@@ -120,7 +189,7 @@ async def _run_async() -> dict:
 
     seen = _load()
     known = _known_handles()
-    checked = notified = 0
+    checked = notified = drafted = 0
 
     client = TelegramClient(session, api_id, api_hash)
     await client.start()
@@ -152,16 +221,32 @@ async def _run_async() -> dict:
                            for b in (getattr(r, "buttons", []) or [])]
             title = ("Бот-рекрутёр" if is_watched
                      else "Рекрутёр из нашей базы")
-            _notify(uname, title, getattr(msg, "message", "") or "", buttons)
+            text = getattr(msg, "message", "") or ""
+            _notify(uname, title, text, buttons)
             seen[key] = msg.id
             notified += 1
+
+            # Черновик — только для интервьюирующих ботов и только на текст:
+            # к сообщению с кнопками ответ печатать не нужно, там выбор.
+            if uname in DRAFT_BOTS and not buttons and len(text) > 80:
+                history = []
+                async for m in client.iter_messages(ent, limit=CONTEXT_MSGS):
+                    body = (m.message or "").strip()
+                    if body:
+                        history.append((bool(m.out), body))
+                history.reverse()
+                draft = _make_draft(history)
+                if draft:
+                    _send_draft(uname, draft)
+                    drafted += 1
     finally:
         await client.disconnect()
 
     _save(seen)
-    log.info("[tg_watch] диалогов под наблюдением: %d, новых сообщений: %d",
-             checked, notified)
-    return {"agent": "tg_watch", "watched": checked, "notified": notified}
+    log.info("[tg_watch] диалогов под наблюдением: %d, новых сообщений: %d, "
+             "черновиков: %d", checked, notified, drafted)
+    return {"agent": "tg_watch", "watched": checked, "notified": notified,
+            "drafted": drafted}
 
 
 class TGWatchAgent:
