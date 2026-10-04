@@ -1,0 +1,22 @@
+[Unit]
+Description=jobsignal: сторож входящих в телеграме
+Documentation=file:///root/visa/docs/ROADMAP.md
+After=network-online.target
+Wants=network-online.target
+OnFailure=jobsignal-alert@%n.service
+
+[Service]
+Type=oneshot
+# run.py делает load_dotenv("config/.env") относительным путём.
+WorkingDirectory=/opt/jobsignal_local
+# Замок hh здесь не нужен: сторож ходит только в телеграм.
+ExecStart=/opt/jobsignal_local/.venv/bin/python run.py tg-watch
+# Просмотр двух десятков диалогов — секунды. Две минуты это страховка от
+# зависшего соединения, а не бюджет времени.
+TimeoutStartSec=120
+Nice=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

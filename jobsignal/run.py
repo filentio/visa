@@ -19,6 +19,7 @@ COMMANDS = (
     "hh-apply", "hh-preview",                # NEW: автоотклик на hh.ru
     "hh-session",             # NEW: жива ли сессия hh.ru и надолго ли
     "hh-replies",             # NEW: учёт ответов на отклики hh.ru
+    "tg-watch",               # NEW: сторож входящих в телеграме
     "channels",               # NEW: list channels
     "pipeline", "status", "dashboard", "serve",
 )
@@ -374,6 +375,20 @@ def main():
               f"{c.get('interview', '?')} | оффер {c.get('hired', '?')}")
         print(f"Сопоставлено с базой: {rep['matched']} из {rep['seen']} | "
               f"новых ответов записано: {rep['replied_new']}")
+
+    elif cmd == "tg-watch":
+        # Сторож входящих: ботов-рекрутёров и контактов из нашей базы.
+        # Отдельной командой и своим таймером: к hh не обращается, замок
+        # ему не нужен, а частота нужна куда выше — вопрос без ответа
+        # закрывает отклик за тринадцать минут.
+        from jobsignal.agents.tg_watch import TGWatchAgent, TGWatchBroken
+        try:
+            rep = TGWatchAgent().run()
+        except TGWatchBroken as exc:
+            logging.error("[tg_watch] СТОРОЖ НЕ РАБОТАЕТ: %s", exc)
+            sys.exit(1)
+        print(f"Диалогов под наблюдением: {rep['watched']} | "
+              f"новых сообщений: {rep['notified']}")
 
     elif cmd == "status":
         from jobsignal.db import get_session_factory, Channel, RawPost, Vacancy, Application, Application as Reply
