@@ -8,7 +8,7 @@ Type=oneshot
 WorkingDirectory=/opt/jobsignal_local
 # Замок hh не берём: .backup читает базу, работе конвейера не мешает и сам
 # ждёт своей очереди на уровне SQLite.
-ExecStart=/opt/jobsignal_local/deploy/backup_db.sh
+ExecStart=/opt/jobsignal_local/.venv/bin/python deploy/backup_db.py
 # Полсотни мегабайт на локальный диск — секунды. Десять минут на случай,
 # если база занята длинной транзакцией.
 TimeoutStartSec=600
