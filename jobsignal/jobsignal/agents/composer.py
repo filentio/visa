@@ -16,6 +16,7 @@ from sqlalchemy import select
 
 from ..db import Application, MatchScore, Vacancy, VacancyStatus, get_session_factory, utcnow
 from ..llm import LLMError, complete_text
+from ..tg_contacts import is_personal, mass_handles
 from .base import BaseAgent
 
 log = logging.getLogger("jobsignal")
@@ -113,8 +114,12 @@ class ComposerAgent(BaseAgent):
         limit = limit or getattr(cfg.settings, "compose_batch_limit", 20)
         cvmap = {p["name"]: p["cv_text"] for p in cfg.profiles}
 
-        made = errors = 0
+        made = errors = skipped_mass = 0
         with Session() as s:
+            # Каналы и агрегаторы из очереди убираем: письмо «здравствуйте,
+            # меня заинтересовала ваша вакансия» в канал на сто сорок вакансий
+            # уходит в пустоту, а в отчётах выглядит как отправленный отклик.
+            mass = mass_handles(s)
             vacs = (
                 s.execute(
                     select(Vacancy)
@@ -129,6 +134,9 @@ class ComposerAgent(BaseAgent):
             for v in vacs:
                 if any(a.is_draft for a in v.applications):
                     continue  # черновик уже есть
+                if not is_personal(v.recruiter_handle, mass):
+                    skipped_mass += 1
+                    continue
                 pname = best_profile_name(v)
                 cv = cvmap.get(pname, "")
                 try:
@@ -146,8 +154,10 @@ class ComposerAgent(BaseAgent):
                 v.status = VacancyStatus.drafted
                 made += 1
             s.commit()
-        log.info("[composer] черновиков создано: %d, ошибок: %d", made, errors)
-        return {"agent": self.name, "drafts": made, "errors": errors}
+        log.info("[composer] черновиков создано: %d, ошибок: %d, "
+                 "пропущено каналов и агрегаторов: %d", made, errors, skipped_mass)
+        return {"agent": self.name, "drafts": made, "errors": errors,
+                "skipped_mass": skipped_mass}
 
 
 
