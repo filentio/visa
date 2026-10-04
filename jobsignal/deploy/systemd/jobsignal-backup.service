@@ -1,0 +1,21 @@
+[Unit]
+Description=jobsignal: копия базы
+Documentation=file:///root/visa/docs/ARCHITECTURE.md
+OnFailure=jobsignal-alert@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/jobsignal_local
+# Замок hh не берём: .backup читает базу, работе конвейера не мешает и сам
+# ждёт своей очереди на уровне SQLite.
+ExecStart=/opt/jobsignal_local/deploy/backup_db.sh
+# Полсотни мегабайт на локальный диск — секунды. Десять минут на случай,
+# если база занята длинной транзакцией.
+TimeoutStartSec=600
+Nice=15
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
