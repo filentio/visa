@@ -11,8 +11,9 @@ MATCHED, если лучший балл >= порога, иначе SKIPPED.
 from __future__ import annotations
 
 import logging
+import os
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from ..db import MatchScore, Vacancy, VacancyStatus, get_session_factory
@@ -25,6 +26,22 @@ CV_CAP = 4000  # ограничение длины резюме в промпт�
 # потолок на описание вакансии: требования и обязанности почти всегда в начале,
 # а без предела одна многословная вакансия стоит как десяток обычных
 DESC_CAP = 3000
+
+# Какие источники оцениваем. Замер 04.10: при 391 вакансии с баллом от 80
+# отправить можно было семь — автоотклик работает только через hh, остальные
+# лежат в дашборде под ручное решение. Оценка вакансии стоит около $0.006, и
+# разбор накопленной очереди из 3300 вакансий обошёлся бы в двадцать долларов,
+# из которых девятнадцать — за те, по которым мы всё равно не откликнемся.
+#
+# Неоценённые НЕ теряются: статус остаётся new, полный текст сохранён, и когда
+# появится канал отправки (телеграм, формы), они оценятся сами — достаточно
+# расширить эту настройку. Оценивать всё, как раньше, — только явное "*":
+# пустая или забытая настройка не должна молча включать расход на всё подряд.
+_raw_sources = (os.environ.get("MATCH_SOURCES") or "hh").strip()
+MATCH_SOURCES: set[str] | None = (
+    None if _raw_sources in ("*", "") else
+    {x.strip() for x in _raw_sources.split(",") if x.strip()}
+)
 
 SYSTEM_TMPL = (
     "Ты оцениваешь, насколько вакансия подходит кандидату под каждый из его "
@@ -97,13 +114,30 @@ class MatcherAgent(BaseAgent):
                         (Vacancy.status == VacancyStatus.new)
                         | ((Vacancy.status == VacancyStatus.skipped)
                            & (~Vacancy.match_scores.any())),
+                        *([Vacancy.contact_type.in_(MATCH_SOURCES)]
+                          if MATCH_SOURCES else []),
                     )
                     .limit(limit)
                 )
                 .scalars()
                 .all()
             )
-            log.info("[matcher] к оценке вакансий: %d, профилей: %d", len(vacs), len(names))
+            # Отложенные считаем и называем вслух: иначе «оценено 0» при
+            # полной очереди из телеграма выглядит как поломка, а это решение.
+            deferred = 0
+            if MATCH_SOURCES:
+                deferred = s.execute(
+                    select(func.count()).select_from(Vacancy).where(
+                        Vacancy.is_primary.is_(True),
+                        Vacancy.status == VacancyStatus.new,
+                        Vacancy.contact_type.notin_(MATCH_SOURCES),
+                    )
+                ).scalar() or 0
+            log.info("[matcher] к оценке вакансий: %d, профилей: %d%s",
+                     len(vacs), len(names),
+                     (f"; отложено {deferred} из других источников "
+                      f"(оцениваем только {', '.join(sorted(MATCH_SOURCES))})"
+                      if MATCH_SOURCES else ""))
 
             for v in vacs:
                 try:
@@ -169,7 +203,7 @@ class MatcherAgent(BaseAgent):
         log.info("[matcher] оценено: %d, прошли порог (%d): %d, ниже порога: %d, ошибок: %d",
                  scored, threshold, matched, skipped, errors)
         return {"agent": self.name, "scored": scored, "matched": matched,
-                "skipped": skipped, "errors": errors}
+                "skipped": skipped, "errors": errors, "deferred": deferred}
 
     @staticmethod
     def _map_scores(data: dict, names: list[str]) -> dict[str, tuple[int, str | None]]:
