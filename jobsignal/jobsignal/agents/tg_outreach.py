@@ -72,10 +72,12 @@ class TGOutreachAgent:
                 .order_by(best.c.score.desc(), Vacancy.created_at.desc())
             ).all()
 
-            queue = [(v, sc) for v, sc in rows
-                     if is_personal(v.recruiter_handle, mass)][:batch]
+            personal = [(v, sc) for v, sc in rows
+                        if is_personal(v.recruiter_handle, mass)]
+            queue = personal[:batch]
             log.info("[tg_outreach] очередь по порогу %d%%: %d вакансий "
-                     "(показываю %d)", THRESHOLD, len(rows), len(queue))
+                     "(с живым контактом %d, показываю %d)",
+                     THRESHOLD, len(rows), len(personal), len(queue))
             if not queue:
                 return {"agent": self.name, "queue": 0, "offered": 0}
 
@@ -124,5 +126,8 @@ class TGOutreachAgent:
             s.close()
 
         log.info("[tg_outreach] предложено: %d, не вышло: %d", offered, failed)
-        return {"agent": self.name, "queue": len(queue), "offered": offered,
-                "failed": failed}
+        # В очереди — ВСЯ пачка, а не показанная часть: иначе итоговая строка
+        # говорит «очередь 5» при девяноста восьми ожидающих, и кажется, что
+        # работа кончилась.
+        return {"agent": self.name, "queue": len(personal), "shown": len(queue),
+                "offered": offered, "failed": failed}

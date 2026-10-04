@@ -398,8 +398,10 @@ def main():
         limit = int(arg) if arg else None
         from jobsignal.agents.tg_outreach import TGOutreachAgent
         rep = TGOutreachAgent().run(limit=limit)
+        left = rep["queue"] - rep["offered"]
         print(f"Очередь: {rep['queue']} | предложено: {rep['offered']}"
-              + (f" | не вышло: {rep['failed']}" if rep.get("failed") else ""))
+              + (f" | не вышло: {rep['failed']}" if rep.get("failed") else "")
+              + (f" | осталось в очереди: {left}" if left > 0 else ""))
 
     elif cmd == "status":
         from jobsignal.db import get_session_factory, Channel, RawPost, Vacancy, Application, Application as Reply
