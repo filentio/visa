@@ -363,6 +363,27 @@ class NotifyBot:
                 pass
             return
 
+        # Кнопка «Пропустить» у телеграм-откликов: человек посмотрел и решил
+        # не писать. Без неё вакансия возвращалась бы в очередь каждый прогон.
+        if data.startswith("tgskip:"):
+            vid = int(data.split(":")[1])
+            conn = sqlite3.connect(DB_PATH)
+            conn.execute("UPDATE vacancies SET status='skipped' WHERE id=?", (vid,))
+            row = conn.execute("SELECT role, company FROM vacancies WHERE id=?",
+                               (vid,)).fetchone()
+            conn.commit()
+            conn.close()
+            role = row[0] if row else "вакансия"
+            try:
+                requests.post(_api("sendMessage"), data={
+                    "chat_id": chat_id,
+                    "text": f"⏭ Пропущено: <b>{_esc(role)}</b>",
+                    "parse_mode": "HTML",
+                }, timeout=10)
+            except Exception:
+                pass
+            return
+
         if not data.startswith("cover:"):
             return
 

@@ -20,6 +20,7 @@ COMMANDS = (
     "hh-session",             # NEW: жива ли сессия hh.ru и надолго ли
     "hh-replies",             # NEW: учёт ответов на отклики hh.ru
     "tg-watch",               # NEW: сторож входящих в телеграме
+    "tg-outreach",            # NEW: отклик в телеграм полуавтоматом
     "channels",               # NEW: list channels
     "pipeline", "status", "dashboard", "serve",
 )
@@ -389,6 +390,16 @@ def main():
             sys.exit(1)
         print(f"Диалогов под наблюдением: {rep['watched']} | "
               f"новых сообщений: {rep['notified']}")
+
+    elif cmd == "tg-outreach":
+        # Готовит пачку откликов в телеграм и присылает в бот. Отправляет
+        # человек: автоматическая рассылка в личку — повод для блокировки
+        # аккаунта, а терять можно не сервис, а переписку.
+        limit = int(arg) if arg else None
+        from jobsignal.agents.tg_outreach import TGOutreachAgent
+        rep = TGOutreachAgent().run(limit=limit)
+        print(f"Очередь: {rep['queue']} | предложено: {rep['offered']}"
+              + (f" | не вышло: {rep['failed']}" if rep.get("failed") else ""))
 
     elif cmd == "status":
         from jobsignal.db import get_session_factory, Channel, RawPost, Vacancy, Application, Application as Reply
