@@ -1089,6 +1089,7 @@ class HHApplyAgent(BaseAgent):
                     viewport={"width": 1440, "height": 900},
                 )
                 self._ctx.set_default_timeout(agent.nav_timeout_ms)
+                await hh_session.block_heavy(self._ctx)
                 return await self._ctx.new_page()
 
             async def __aexit__(self, *exc):

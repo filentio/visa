@@ -192,6 +192,7 @@ async def _collect_async(max_pages: int) -> list[dict]:
                 locale="ru-RU", viewport={"width": 1440, "height": 900})
             ctx.set_default_timeout(
                 int(os.environ.get("HH_NAV_TIMEOUT_MS", "60000")))
+            await hh_session.block_heavy(ctx)
             page_obj = await ctx.new_page()
             n = 0
             while n < max_pages:

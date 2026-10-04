@@ -34,6 +34,8 @@ from typing import Optional
 import requests
 from urllib.parse import urlparse
 
+from pathlib import Path
+
 from jobsignal.db import get_session_factory, Channel, RawPost
 
 log = logging.getLogger("jobsignal")
@@ -74,6 +76,31 @@ HH_DESC_LIMIT = int(os.environ.get("HH_DESC_LIMIT", "150"))
 RESUME_FEED_URL = "https://hh.ru/search/vacancy"
 # Страниц подбора за прогон, по 50 вакансий. 0 — источник выключен.
 HH_RESUME_PAGES = int(os.environ.get("HH_RESUME_PAGES", "2"))
+# Как часто ходить за подбором, в часах. Замер 04.10: сто карточек за прогон
+# дают 0-3 новых вакансии — выдача почти не меняется, а каждая загрузка идёт
+# через платный прокси. Ежечасный обход тратил трафик впустую; раз в шесть
+# часов теряем часы свежести и экономим три четверти обращений.
+HH_RESUME_EVERY_H = float(os.environ.get("HH_RESUME_EVERY_H", "6"))
+RESUME_STAMP = Path(os.environ.get("HH_RESUME_STAMP", "data/hh_resume_last.txt"))
+
+
+def _resume_due() -> bool:
+    """Пора ли за подбором. Метка в файле: переживает перезапуск, не требует БД."""
+    if HH_RESUME_PAGES <= 0:
+        return False
+    try:
+        last = float(RESUME_STAMP.read_text().strip())
+    except Exception:  # noqa: BLE001 — нет метки или битая: значит пора
+        return True
+    return (time.time() - last) >= HH_RESUME_EVERY_H * 3600
+
+
+def _resume_done() -> None:
+    try:
+        RESUME_STAMP.parent.mkdir(parents=True, exist_ok=True)
+        RESUME_STAMP.write_text(str(time.time()))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[hh] метка подбора не записана: %s", exc)
 # Хеш резюме. Пусто — найдём сами на странице профиля (лишняя загрузка).
 HH_RESUME_HASH = (os.environ.get("HH_RESUME_HASH") or "").strip()
 RESUME_HASH_RE = re.compile(r"/resume/([0-9a-f]{20,})")
@@ -277,6 +304,7 @@ async def _resume_feed_async(pages: int) -> list[dict]:
                 storage_state=str(state_file) if state_file.exists() else None,
                 locale="ru-RU", viewport={"width": 1440, "height": 900})
             ctx.set_default_timeout(int(os.environ.get("HH_NAV_TIMEOUT_MS", "60000")))
+            await hh_session.block_heavy(ctx)
             page_obj = await ctx.new_page()
 
             async def load(url: str) -> str:
@@ -568,7 +596,7 @@ class HHCollector:
         # ловим отдельно и сообщаем громко, но прогон продолжаем.
         feed_cards = 0
         feed_error = None
-        if HH_RESUME_PAGES > 0:
+        if _resume_due():
             try:
                 for card in fetch_resume_feed(HH_RESUME_PAGES):
                     feed_cards += 1
@@ -581,6 +609,7 @@ class HHCollector:
                         continue
                     seen_ids.add(vac_id)
                     fresh.append(item)
+                _resume_done()
                 log.info("[hh] подбор под резюме → %d карточек", feed_cards)
                 if feed_cards == 0:
                     # Пустой подбор при живой сессии — не «вакансий нет», а

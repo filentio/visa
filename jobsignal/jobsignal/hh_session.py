@@ -138,6 +138,30 @@ def playwright_proxy() -> dict | None:
 # Единственная рабочая проверка доступа — живая проба браузером (probe ниже).
 
 
+# Что браузеру грузить незачем. Через резидентный прокси каждый байт платный:
+# 04.10 за сутки ушло почти полгигабайта из гигабайтного пакета, и основной
+# расход давала отправка — страница вакансии с картинками, шрифтами и видео
+# весит мегабайты, а нужен из неё только текст и форма отклика.
+#
+# Стили НЕ режем намеренно: видимость элементов проверяется через CSS, и без
+# таблиц стилей Playwright считал бы кнопку отклика скрытой.
+BLOCKED_RESOURCES = {"image", "media", "font"}
+
+
+async def block_heavy(ctx) -> None:
+    """Не грузить картинки, шрифты и видео. Экономит до трёх четвертей трафика."""
+    async def _route(route):
+        try:
+            if route.request.resource_type in BLOCKED_RESOURCES:
+                await route.abort()
+            else:
+                await route.continue_()
+        except Exception:  # noqa: BLE001 — гонка при закрытии страницы
+            pass
+
+    await ctx.route("**/*", _route)
+
+
 def state_path() -> Path:
     return Path(os.environ.get("HH_STATE_PATH", DEFAULT_STATE_PATH))
 
@@ -364,6 +388,7 @@ async def _probe_async(path: Path, headless: bool) -> tuple[bool, str]:
                 viewport={"width": 1440, "height": 900},
             )
             ctx.set_default_timeout(int(os.environ.get("HH_NAV_TIMEOUT_MS", "30000")))
+            await block_heavy(ctx)
             page = await ctx.new_page()
             alive, detail = await check_page(page)
             # Куки продлеваются на каждом визите — сохраняем, но ТОЛЬКО если
