@@ -151,17 +151,25 @@ async def _goto_patient(page_obj, url: str, page_no: int) -> str:
     """Открыть страницу и дождаться настоящих данных, а не заглушки."""
     last = ""
     for attempt in range(1, CHALLENGE_TRIES + 1):
-        await page_obj.goto(url, wait_until="domcontentloaded")
+        # goto ВНУТРИ try, а не перед ним. 05.10 прогон упал целиком на
+        # «Page.goto: Timeout 60000ms exceeded»: повтор был рассчитан только
+        # на медленную проверку ddos-guard, а медленную загрузку самой
+        # страницы не покрывал. Через резидентный прокси это рядовое событие,
+        # и из-за одной такой минуты пропадали сутки учёта ответов — прогон
+        # ведь раз в день.
         try:
+            await page_obj.goto(url, wait_until="domcontentloaded")
             await page_obj.wait_for_function(_READY_JS, timeout=CHALLENGE_WAIT_MS)
             return await page_obj.content()
-        except Exception:  # noqa: BLE001 — таймаут ожидания, не ошибка кода
-            last = await page_obj.content()
-            log.warning("[hh_replies] страница %d: данных нет через %d с "
-                        "(попытка %d из %d, %d симв.) — проверка ddos-guard "
-                        "ещё идёт, перезагружаю",
-                        page_no, CHALLENGE_WAIT_MS // 1000, attempt,
-                        CHALLENGE_TRIES, len(last))
+        except Exception as exc:  # noqa: BLE001 — таймаут, не ошибка кода
+            try:
+                last = await page_obj.content()
+            except Exception:  # noqa: BLE001 — страница могла не открыться
+                last = ""
+            log.warning("[hh_replies] страница %d: не открылась или данных "
+                        "нет (попытка %d из %d, %d симв.) — %s; перезагружаю",
+                        page_no, attempt, CHALLENGE_TRIES, len(last),
+                        str(exc).splitlines()[0][:100])
             await asyncio.sleep(3)
     return last
 
