@@ -18,7 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from ..db import MatchScore, Vacancy, VacancyStatus, get_session_factory
 from ..llm import LLMError, LLMUnavailable, complete_json
-from ..tg_contacts import is_personal, mass_handles
+from ..tg_contacts import mass_handles
 from .base import BaseAgent
 
 log = logging.getLogger("jobsignal")
@@ -103,6 +103,24 @@ class MatcherAgent(BaseAgent):
 
         scored = matched = skipped = errors = 0
         with Session() as s:
+            # Телеграм-вакансии с контактом-каналом отбрасываем ЗАПРОСОМ, а не
+            # после выборки. Разница не стилистическая: 06.10 этот фильтр стоял
+            # после .limit(), пачка из 200 целиком набивалась вакансиями
+            # агентств (они старше, идут первыми), все 200 отсеивались, и до
+            # 294 вакансий с hh очередь не доходила. Матчер два дня честно
+            # писал «к оценке 0», сбор работал, отправке было нечего брать.
+            #
+            # Правило: отбор должен стоять до ограничения пачки, иначе лимит
+            # расходуется на то, что мы и так выбросим.
+            tg_filter = []
+            if MATCH_SOURCES and "tg" in MATCH_SOURCES:
+                mass = mass_handles(s)
+                tg_filter = [
+                    (Vacancy.contact_type != "tg")
+                    | (Vacancy.recruiter_handle.isnot(None)
+                       & Vacancy.recruiter_handle.notin_(mass or [""]))
+                ]
+
             vacs = (
                 s.execute(
                     select(Vacancy)
@@ -117,25 +135,16 @@ class MatcherAgent(BaseAgent):
                            & (~Vacancy.match_scores.any())),
                         *([Vacancy.contact_type.in_(MATCH_SOURCES)]
                           if MATCH_SOURCES else []),
+                        *tg_filter,
                     )
+                    # Свежие вперёд: если пачки не хватит на всю очередь,
+                    # оценить стоит то, по чему ещё можно откликнуться.
+                    .order_by(Vacancy.id.desc())
                     .limit(limit)
                 )
                 .scalars()
                 .all()
             )
-            # Телеграм-вакансии с контактом-каналом отбрасываем до оценки:
-            # писать туда некому, а оценка стоит денег. 24 «контакта» дают
-            # 1147 вакансий из 4251 — это агрегаторы и кадровые агентства.
-            # Для hh правило не действует: там отклик идёт по ссылке.
-            if MATCH_SOURCES and "tg" in MATCH_SOURCES:
-                mass = mass_handles(s)
-                before = len(vacs)
-                vacs = [v for v in vacs
-                        if v.contact_type != "tg"
-                        or is_personal(v.recruiter_handle, mass)]
-                if before != len(vacs):
-                    log.info("[matcher] пропущено телеграм-вакансий с "
-                             "контактом-каналом: %d", before - len(vacs))
 
             # Отложенные считаем и называем вслух: иначе «оценено 0» при
             # полной очереди из телеграма выглядит как поломка, а это решение.
