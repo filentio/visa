@@ -31,6 +31,16 @@ class Channel(Base):
     title = Column(String)
     niche = Column(String)
     active = Column(Boolean, default=True)
+    # Осколок старой схемы: в таблице колонка объявлена NOT NULL и без
+    # значения по умолчанию, а в модели её не было. Код весь читает active,
+    # enabled не читает никто — но без неё ЛЮБАЯ вставка канала через ORM
+    # падает на IntegrityError, что и случилось 07.10 при добавлении каналов
+    # из подписок. Раньше не всплывало просто потому, что каналы заводились
+    # вручную через SQL.
+    #
+    # Держим модель равной схеме и дублируем значение active: удалять колонку
+    # в живой базе рискованнее, чем признать её существование.
+    enabled = Column(Boolean, nullable=False, default=True)
     last_message_id = Column(Integer, default=0)
     added_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     # manual / tgstat / telemetr / auto_search

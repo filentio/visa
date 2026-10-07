@@ -194,8 +194,11 @@ def main() -> int:
                     status="added" if add else "pending",
                 ))
             if add:
+                # enabled задаём явно: в таблице колонка NOT NULL без
+                # значения по умолчанию (осколок старой схемы, см. db.py).
                 s.add(Channel(handle=it["handle"], title=it["title"],
-                              niche=niche, active=True, source="my_subscriptions",
+                              niche=niche, active=True, enabled=True,
+                              source="my_subscriptions",
                               subscriber_count=it["subs"], verified_at=utcnow()))
                 added += 1
         s.commit()
