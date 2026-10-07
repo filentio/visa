@@ -44,10 +44,15 @@ load_dotenv("config/.env")
 from sqlalchemy import select  # noqa: E402
 from sqlalchemy.orm import selectinload  # noqa: E402
 
-from jobsignal.db import Vacancy, RawPost, get_session_factory  # noqa: E402
+from jobsignal.db import (Channel, RawPost, Vacancy,  # noqa: E402
+                          get_session_factory)
+from jobsignal.tg_contacts import mass_handles  # noqa: E402
 
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
-HH = re.compile(r"https?://(?:[a-z]+\.)?hh\.(?:ru|kz)/vacancy/\d+", re.I)
+# Схема необязательна: в постах ссылки часто без неё — «hh.ru/vacancy/123».
+# Первый предпросмотр с обязательным https:// нашёл ноль при шестидесяти
+# по замеру.
+HH = re.compile(r"(?:https?://)?(?:[a-z]+\.)?hh\.(?:ru|kz)/vacancy/\d+", re.I)
 # Собака — телеграм-имя, только если перед ней не стоит часть адреса. Иначе
 # «ivan@sberbank.ru» даёт контакт «@sberbank»: список почтовых доменов спасает
 # от gmail и yandex, но не от корпоративной почты.
@@ -63,31 +68,42 @@ def _channel_handle(post: RawPost | None) -> str:
     return ((getattr(ch, "handle", "") or "").lstrip("@").lower())
 
 
-def classify(v: Vacancy) -> tuple[str, str]:
-    """(вид, значение) — лучший найденный способ отклика или ("", "")."""
+# Признаки канала, а не человека, в самом имени. Нужны потому, что посты
+# рекламируют соседние каналы: первый предпросмотр 07.10 выдал «контактами
+# рекрутёров» @qa_jobs, @job_react, @devs_it и даже @workayte — один из наших
+# же отслеживаемых каналов.
+CHANNELISH = ("job", "vacanc", "vakans", "career", "devs_", "_it", "remote",
+              "freelance", "work")
+
+
+def classify(v: Vacancy, not_people: set[str]) -> tuple[str, str]:
+    """(вид, значение) — лучший найденный способ отклика или ("", "").
+
+    Порядок — по надёжности, и он важен. Почта стоит ВЫШЕ телеграма: в первой
+    версии было наоборот, и пост с рекламой соседнего канала и почтой
+    рекрутёра уходил в «телеграм» — ссылка на канал перебивала живой адрес.
+    """
     text = (v.raw_post.text if v.raw_post is not None else "") or ""
     own = _channel_handle(v.raw_post)
 
     m = HH.search(text)
     if m:
-        return "hh", m.group(0)
-
-    for h in TME.findall(text):
-        hl = h.lower()
-        if hl == own or hl.endswith("bot"):
-            continue
-        # Почтовые домены после собаки — не телеграм-имя: «ivan@gmail»
-        # даёт «gmail». Отбрасываем, ровно как в парсере.
-        if hl in ("gmail", "yandex", "mail", "bk", "list", "inbox",
-                  "outlook", "icloud", "rambler", "proton"):
-            continue
-        return "tg", "@" + h
+        url = m.group(0)
+        return "hh", url if url.lower().startswith("http") else "https://" + url
 
     for e in EMAIL.findall(text):
         el = e.lower()
         if any(j in el for j in JUNK_EMAIL):
             continue
         return "email", el
+
+    for h in TME.findall(text):
+        hl = h.lower()
+        if hl == own or hl.endswith("bot") or hl in not_people:
+            continue
+        if any(p in hl for p in CHANNELISH):
+            continue
+        return "tg", "@" + h
 
     return "", ""
 
@@ -106,8 +122,14 @@ def main() -> int:
                    Vacancy.is_primary.is_(True))
         ).scalars().all()
 
+        # Кто точно не человек: наши отслеживаемые каналы и контакты, которые
+        # встречаются слишком часто (та же проверка, что в отправке).
+        not_people = {(h or "").lstrip("@").lower()
+                      for (h,) in s.query(Channel.handle).all() if h}
+        not_people |= {(h or "").lstrip("@").lower() for h in mass_handles(s)}
+
         for v in vacs:
-            kind, value = classify(v)
+            kind, value = classify(v, not_people)
             kinds[kind or "нет"] += 1
             if kind and len(examples.setdefault(kind, [])) < 5:
                 examples[kind].append(f"#{v.id} {(v.role or '?')[:40]} → {value}")
