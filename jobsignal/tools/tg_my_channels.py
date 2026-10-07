@@ -16,7 +16,8 @@
 потому что лишний канал стоит денег на каждом разборе.
 
     cd /opt/jobsignal_local && .venv/bin/python tools/tg_my_channels.py
-    cd /opt/jobsignal_local && .venv/bin/python tools/tg_my_channels.py --add
+    cd /opt/jobsignal_local && .venv/bin/python tools/tg_my_channels.py \
+        --add --only product_jobs,products_jobs_projects
 """
 from __future__ import annotations
 
@@ -137,8 +138,28 @@ def judge(items: list[dict]) -> dict[str, dict]:
     return verdicts
 
 
+def _only() -> set[str]:
+    """--only a,b,c — взять лишь названные каналы.
+
+    Нужно потому, что «публикует вакансии» и «публикует НУЖНЫЕ вакансии» —
+    разные вещи. Первый обход 07.10 нашёл одиннадцать годных каналов, из
+    которых четыре по профилю, а остальные про разработку, фриланс и
+    affiliate-маркетинг. Каждый канал это 100-300 постов в месяц и плата за
+    разбор каждого, поэтому брать всё подряд дороже, чем полезно.
+    """
+    for i, a in enumerate(sys.argv):
+        if a == "--only" and i + 1 < len(sys.argv):
+            return {h.strip().lstrip("@").lower()
+                    for h in sys.argv[i + 1].split(",") if h.strip()}
+        if a.startswith("--only="):
+            return {h.strip().lstrip("@").lower()
+                    for h in a.split("=", 1)[1].split(",") if h.strip()}
+    return set()
+
+
 def main() -> int:
     add = "--add" in sys.argv
+    only = _only()
     items = asyncio.run(collect())
     if not items:
         print("новых каналов среди подписок не найдено")
@@ -148,6 +169,13 @@ def main() -> int:
     verdicts = judge(items)
     fits = [it for it in items if (verdicts.get(it["handle"], {})).get("fits")]
     rest = [it for it in items if it not in fits]
+    if only:
+        missing = only - {it["handle"] for it in fits}
+        fits = [it for it in fits if it["handle"] in only]
+        if missing:
+            # Громко: молча взять девять из десяти названных значит оставить
+            # человека в уверенности, что подписка оформлена.
+            print(f"НЕ НАЙДЕНЫ среди подходящих: {', '.join(sorted(missing))}\n")
 
     s = get_session_factory()()
     added = 0
