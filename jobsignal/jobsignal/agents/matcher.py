@@ -146,6 +146,26 @@ class MatcherAgent(BaseAgent):
                 .all()
             )
 
+            # Сколько телеграм-вакансий отбросило условие выше. Считаем
+            # отдельным запросом, а не по разнице выборки: фильтр теперь в
+            # WHERE, и без этого счёта «к оценке 0» молчит о 480 отброшенных
+            # вакансиях. Ровно тот же тихий ноль, который чинился 06.10 в
+            # соседней строке, только переехавший вместе с фильтром.
+            no_contact = mass_skipped = 0
+            if MATCH_SOURCES and "tg" in MATCH_SOURCES:
+                base = [Vacancy.is_primary.is_(True),
+                        Vacancy.status == VacancyStatus.new,
+                        Vacancy.contact_type == "tg"]
+                no_contact = s.execute(
+                    select(func.count()).select_from(Vacancy)
+                    .where(*base, Vacancy.recruiter_handle.is_(None))
+                ).scalar() or 0
+                mass_skipped = s.execute(
+                    select(func.count()).select_from(Vacancy).where(
+                        *base, Vacancy.recruiter_handle.isnot(None),
+                        Vacancy.recruiter_handle.in_(mass or [""]))
+                ).scalar() or 0
+
             # Отложенные считаем и называем вслух: иначе «оценено 0» при
             # полной очереди из телеграма выглядит как поломка, а это решение.
             deferred = 0
@@ -162,6 +182,10 @@ class MatcherAgent(BaseAgent):
                      (f"; отложено {deferred} из других источников "
                       f"(оцениваем только {', '.join(sorted(MATCH_SOURCES))})"
                       if MATCH_SOURCES else ""))
+            if no_contact or mass_skipped:
+                log.info("[matcher] телеграм вне оценки: %d с контактом-каналом"
+                         " (писать некому), %d вообще без контакта",
+                         mass_skipped, no_contact)
 
             for v in vacs:
                 try:
