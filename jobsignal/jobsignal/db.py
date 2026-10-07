@@ -90,6 +90,11 @@ class Vacancy(Base):
     role = Column(String)
     company = Column(String)
     recruiter_handle = Column(String)   # @username for TG direct message
+    # Почта рекрутёра из текста поста. Замер 07.10: из 567 телеграм-вакансий,
+    # которые считались «без контакта», 302 содержали почту — gmail, yandex,
+    # mail.ru, то есть личные ящики людей. Парсер искал только телеграм-
+    # контакт, и больше половины «глухих» вакансий на деле были с адресом.
+    recruiter_email = Column(String)
     salary = Column(String)
     location = Column(String)
     link = Column(String)               # apply URL (hh.ru, form, etc.)
@@ -232,9 +237,29 @@ def get_engine(url: str | None = None):
     return engine
 
 
+# Колонки, добавленные в модель после того, как таблица уже существовала.
+# create_all() в существующую таблицу ничего не добавляет, а модель с лишней
+# колонкой роняет ЛЮБОЙ запрос к таблице, не только запись. Поэтому заводим
+# их здесь, централизованно и до первого запроса, а не в отдельном агенте:
+# раньше так и делали (reply_state в hh_replies, notified_at в боте), и тогда
+# модель была верна только после того, как тот агент хоть раз отработает.
+_LATE_COLUMNS = (
+    ("vacancies", "recruiter_email", "VARCHAR"),
+)
+
+
+def _ensure_late_columns(engine) -> None:
+    with engine.begin() as conn:
+        for table, col, ddl in _LATE_COLUMNS:
+            have = {r[1] for r in conn.exec_driver_sql(f"PRAGMA table_info({table})")}
+            if have and col not in have:
+                conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+
+
 def get_session_factory(url: str | None = None):
     engine = get_engine(url)
     Base.metadata.create_all(engine)
+    _ensure_late_columns(engine)
     return sessionmaker(bind=engine)
 
 from datetime import datetime, timezone
