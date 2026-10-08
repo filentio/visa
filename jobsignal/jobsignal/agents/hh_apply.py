@@ -625,6 +625,10 @@ class HHApplyAgent(BaseAgent):
 
         v = session.get(Vacancy, item["id"])
         profile = item["profile"] if item["profile"] in PROFILE_LABELS else "Senior PM/PO"
+        # Полный текст вакансии, а не пересказ парсера: письмо должно
+        # зацепиться за их конкретную задачу, а пересказ — одна фраза.
+        vac_text = ((v.raw_post.text if v.raw_post is not None else "")
+                    or v.description or "")
         text = ""
         for try_no in range(1, LETTER_TRIES + 1):
             text = (_cover_text(
@@ -632,6 +636,7 @@ class HHApplyAgent(BaseAgent):
                 company=v.company or "",
                 profile_key=profile,
                 recruiter_name="",
+                vacancy_text=vac_text,
             ) or "").strip()
             problem = letter_problem(text)
             if problem is None:

@@ -123,8 +123,16 @@ def _get_active_template() -> dict | None:
         return None
 
 
-def _cover_text(role: str, company: str, profile_key: str, recruiter_name: str = "") -> str:
-    """Generate cover letter using active template + real resume text. No hallucinations."""
+def _cover_text(role: str, company: str, profile_key: str, recruiter_name: str = "",
+                vacancy_text: str = "") -> str:
+    """Generate cover letter using active template + real resume text. No hallucinations.
+
+    vacancy_text — текст самой вакансии. Раньше модель получала только
+    название роли и компанию, и письмо не могло зацепиться ни за одну
+    конкретную задачу: отсюда безличные письма, которые подходят к любой
+    вакансии и потому не подходят ни к одной.
+    """
+    from jobsignal.letter_style import HUMAN_VOICE, style_tells
     from jobsignal.agents.resume_parser import get_resume_text
     from jobsignal.config import get_config
     from jobsignal.llm import complete_text
@@ -152,10 +160,15 @@ def _cover_text(role: str, company: str, profile_key: str, recruiter_name: str =
             "Напиши короткое сопроводительное письмо (5-7 предложений). "
             "Используй ТОЛЬКО факты из резюме — никаких выдуманных цифр и компаний. "
             "Стиль: деловой, живой, как человек пишет человеку. "
-            "Без шаблонных фраз типа \"уверен что мой опыт\", \"стремлюсь к развитию\". "
-            "Структура: приветствие → вакансия → кто я + компании → 1-2 результата → призыв обсудить."
+            "Приветствие, затем сразу то, что связывает кандидата с этой "
+            "вакансией: один-два результата из резюме, которые отвечают на "
+            "их задачу, с названиями компаний. В конце — что готов показать "
+            "или обсудить."
         )
     )
+    # Правила голоса добавляются ПОВЕРХ любого промпта, включая шаблон из
+    # дашборда: шаблон задаёт содержание, а голос у всех писем один.
+    system_prompt = system_prompt + "\n\n" + HUMAN_VOICE
 
     profile_labels = {
         "Senior AI PM": "AI Product Owner",
@@ -169,10 +182,14 @@ def _cover_text(role: str, company: str, profile_key: str, recruiter_name: str =
         f"Вакансия: {role}{company_part}\n"
         f"Имя рекрутёра: {recruiter_name or 'неизвестно'}\n"
         f"Профиль кандидата: {profile_labels.get(profile_key, profile_key)}\n\n"
-        f"Резюме кандидата:\n{resume_text[:3500]}\n\n"
+        + (f"Текст вакансии:\n{vacancy_text.strip()[:2500]}\n\n"
+           if vacancy_text and vacancy_text.strip() else "")
+        + f"Резюме кандидата:\n{resume_text[:3500]}\n\n"
         f"Напиши сопроводительное письмо. "
         f"Начни с \'Добрый день{name_part}\'. "
-        f"Только факты из резюме, никаких выдумок."
+        f"Факты о кандидате — только из резюме. Из текста вакансии бери "
+        f"только их задачу, за которую зацепиться, и не приписывай "
+        f"кандидату её требования."
     )
 
     try:
@@ -182,7 +199,14 @@ def _cover_text(role: str, company: str, profile_key: str, recruiter_name: str =
         model = get_config().settings.anthropic_model
         # Кириллица дорога по токенам (~1 символ на токен): на 350-1200
         # письмо обрывалось на полуслове, 2000 хватает на 5-7 предложений.
-        return complete_text(system_prompt, user, model, 2000).strip()
+        text = complete_text(system_prompt, user, model, 2000,
+                             cache_system=True).strip()
+        # Замер, а не фильтр: видно, слушается ли модель правил голоса.
+        tells = style_tells(text)
+        if tells:
+            log.info("[notify] письмо: остались шаблонные маркеры — %s",
+                     ", ".join(tells))
+        return text
     except Exception as e:
         log.warning("[notify] cover LLM error: %s", e)
         return f"Добрый день{name_part}\n\nЗаинтересовала вакансия {role}{company_part}. Прилагаю резюме — готов обсудить."

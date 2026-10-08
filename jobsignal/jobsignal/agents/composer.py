@@ -70,16 +70,21 @@ DEFAULT_STYLE = "metric"
 
 
 def _system_for(style: str) -> str:
+    from ..letter_style import HUMAN_VOICE
     st = STYLES.get(style) or STYLES[DEFAULT_STYLE]
-    return BASE_SYSTEM + "\n\n" + st["hint"]
+    return BASE_SYSTEM + "\n\n" + st["hint"] + "\n\n" + HUMAN_VOICE
 
 
 def generate_draft(vacancy: Vacancy, profile_name: str, cv_text: str, model: str,
                    style: str = DEFAULT_STYLE) -> str:
+    # Полный текст поста, а не пересказ парсера: description — одна фраза, и
+    # зацепиться в письме за их конкретную задачу было не за что.
+    raw = getattr(vacancy, "raw_post", None)
+    body = ((raw.text if raw is not None else "") or vacancy.description or "—")
     user = (
         f"ВАКАНСИЯ\nРоль: {vacancy.role or '—'}\n"
         f"Компания: {vacancy.company or '—'}\n"
-        f"Описание: {vacancy.description or '—'}\n\n"
+        f"Описание: {body.strip()[:2500]}\n\n"
         f"МОЙ ПРОФИЛЬ — {profile_name}:\n{cv_text[:CV_CAP]}"
     )
     # max_tokens — предохранитель от обрыва, а не бюджет: платим за реально
