@@ -86,7 +86,10 @@ if [ "$enable_mode" -eq 0 ]; then
   # туннель  ssh -L 5000:localhost:5000 root@<сервер>
   ufw allow OpenSSH >/dev/null
   ufw deny 5000/tcp >/dev/null
-  yes | ufw enable >/dev/null
+  # --force, а не «yes | ufw enable»: при pipefail yes получает SIGPIPE, когда
+  # ufw закрывается, и вся связка считается сбоем — 12.10 скрипт так и
+  # вышел молча после последнего шага, не напечатав итог.
+  ufw --force enable >/dev/null
 
   cat <<MSG
 
