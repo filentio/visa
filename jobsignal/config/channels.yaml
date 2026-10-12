@@ -48,3 +48,9 @@ channels:
   - { handle: "@theypaywell", title: "Вакансии с ЗП выше 100 тысяч", niche: "product/dev" }
   - { handle: "@ITjobsFeed", title: "Jobs Feed IT & Digital", niche: "product/data" }
   - { handle: "@geekjobs", title: "Job in IT&Digital", niche: "digital" }
+
+  # --- Добавлены 07.10 из собственных подписок (tools/tg_my_channels.py) ---
+  - { handle: "@product_manager_vakansii", title: "Product Manager | Вакансии", niche: "product" }
+  - { handle: "@products_jobs_projects", title: "Вакансии для продактов / проджектов", niche: "product" }
+  - { handle: "@product_jobs", title: "Вакансии для продактов и проджектов", niche: "product" }
+  - { handle: "@networkio_io", title: "Networkio — релокация и карьера за рубеж", niche: "bizdev/abroad" }

@@ -11,7 +11,7 @@ beautifulsoup4>=4.12
 lxml>=5.0
 
 # --- Этапы 5-6 (опц.): отправка в личку / чтение входящих через MTProto (нужен api_id) ---
-# Telethon>=1.36
+Telethon>=1.36   # сторож входящих, проверка дублей, поиск каналов в подписках
 
 # --- Этапы 2,3,5: парсинг/скоринг/генерация ---
 anthropic>=0.40
@@ -25,3 +25,10 @@ APScheduler>=3.10
 # извлечение текста резюме из PDF (resume_parser); без него письма
 # писались по устаревшему тексту из таблицы resumes
 pypdf>=6.0
+
+# --- Кабинет hh.ru: настоящий браузер (ddos-guard требует JavaScript) ---
+# После установки: .venv/bin/playwright install --with-deps chromium
+playwright>=1.45
+
+# config/.env читают инструменты из tools/
+python-dotenv>=1.0
