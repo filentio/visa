@@ -52,7 +52,19 @@ WAIT_MINUTES = 15
 def playwright_proxy(url: str | None) -> dict | None:
     if not url:
         return None
+    url = url.strip().strip('"').strip("'")
+    if url.startswith("HH_PROXY="):
+        url = url.split("=", 1)[1]
     p = urlsplit(url)
+    # Проверяем сами: иначе Playwright падает с голым «Invalid URL», и не
+    # понять, что не так. 14.10 так ушёл час на вход с Windows — строка
+    # приходила без схемы, с префиксом HH_PROXY= или пустой.
+    if p.scheme not in ("http", "https", "socks5") or not p.hostname or not p.port:
+        shown = url.split("@")[-1] if "@" in url else url
+        raise SystemExit(
+            "строка прокси не похожа на адрес прокси.\n"
+            "Нужно: http://логин:пароль@хост:порт\n"
+            f"Получено (без логина и пароля): {shown[:60]!r}")
     out = {"server": f"{p.scheme}://{p.hostname}" + (f":{p.port}" if p.port else "")}
     if p.username:
         out["username"] = p.username
