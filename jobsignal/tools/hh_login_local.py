@@ -52,24 +52,37 @@ WAIT_MINUTES = 15
 def playwright_proxy(url: str | None) -> dict | None:
     if not url:
         return None
-    url = url.strip().strip('"').strip("'")
+    url = url.strip().strip('"').strip("'").lstrip("﻿")
     if url.startswith("HH_PROXY="):
         url = url.split("=", 1)[1]
-    p = urlsplit(url)
-    # Проверяем сами: иначе Playwright падает с голым «Invalid URL», и не
-    # понять, что не так. 14.10 так ушёл час на вход с Windows — строка
-    # приходила без схемы, с префиксом HH_PROXY= или пустой.
-    if p.scheme not in ("http", "https", "socks5") or not p.hostname or not p.port:
-        shown = url.split("@")[-1] if "@" in url else url
+    # Разбираем руками, а не urlsplit. В пароле прокси бывают «#», «/», «?»:
+    # для стандартного разбора это конец адреса, и строка ломается — так
+    # 14.10 падал вход с Windows, хотя curl с той же строкой работал (он
+    # разбирает проще). Здесь логин:пароль — всё до ПОСЛЕДНЕЙ «@».
+    scheme, sep, rest = url.partition("://")
+    creds, at, hostport = rest.rpartition("@")
+    if not at:
+        creds, hostport = "", rest
+    host, _, port = hostport.partition(":")
+    port = port.rstrip("/")
+    problems = []
+    if not sep or scheme.lower() not in ("http", "https", "socks5"):
+        problems.append(f"схема {scheme[:10]!r} вместо http://")
+    if not host:
+        problems.append("нет хоста")
+    if not port.isdigit():
+        problems.append("нет порта")
+    if problems:
         raise SystemExit(
-            "строка прокси не похожа на адрес прокси.\n"
-            "Нужно: http://логин:пароль@хост:порт\n"
-            f"Получено (без логина и пароля): {shown[:60]!r}")
-    out = {"server": f"{p.scheme}://{p.hostname}" + (f":{p.port}" if p.port else "")}
-    if p.username:
-        out["username"] = p.username
-    if p.password:
-        out["password"] = p.password
+            "строка прокси не похожа на адрес прокси: " + ", ".join(problems)
+            + "\nНужно: http://логин:пароль@хост:порт"
+            + f"\nДлина строки: {len(url)}, после @: {hostport[:40]!r}")
+    out = {"server": f"{scheme.lower()}://{host}:{port}"}
+    if creds:
+        user, _, pwd = creds.partition(":")
+        out["username"] = user
+        if pwd:
+            out["password"] = pwd
     return out
 
 
