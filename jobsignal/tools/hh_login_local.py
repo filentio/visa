@@ -105,7 +105,23 @@ async def run(opts) -> int:
         ctx = await browser.new_context(locale="ru-RU",
                                         viewport={"width": 1440, "height": 900})
         page = await ctx.new_page()
-        await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+        # Ошибка первой загрузки не повод закрывать окно. Через прокси и
+        # туннель страница может не открыться с первого раза (14.10:
+        # ERR_HTTP_RESPONSE_CODE_FAILURE), а закрытое окно не даёт ни увидеть,
+        # что отвечает hh, ни обновить страницу руками.
+        for attempt in range(1, 4):
+            try:
+                resp = await page.goto(LOGIN_URL, wait_until="domcontentloaded",
+                                       timeout=90_000)
+                print(f"страница входа: HTTP {resp.status if resp else '—'}")
+                break
+            except Exception as exc:  # noqa: BLE001
+                print(f"попытка {attempt}/3: страница не открылась — "
+                      f"{str(exc).splitlines()[0][:150]}")
+                await asyncio.sleep(5)
+        else:
+            print("Страница входа так и не открылась. Окно оставляю: открой "
+                  "hh.ru/account/login в нём руками или обнови страницу (F5).")
 
         print("Окно браузера открыто. Войди на hh обычным способом —")
         print("пароль, SMS, капча. Я жду появления меню соискателя.")
