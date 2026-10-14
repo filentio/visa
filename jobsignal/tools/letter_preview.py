@@ -14,6 +14,11 @@
 
     cd /opt/jobsignal_local && .venv/bin/python tools/letter_preview.py sent 5
     cd /opt/jobsignal_local && .venv/bin/python tools/letter_preview.py new 3
+    cd /opt/jobsignal_local && .venv/bin/python tools/letter_preview.py reset
+
+reset — стереть неотправленные черновики. Автоотклик берёт готовый черновик,
+если он есть, поэтому после правки правил голоса старые письма ушли бы как
+есть. Отправленные письма не трогает.
 """
 from __future__ import annotations
 
@@ -81,6 +86,19 @@ def new(n: int) -> int:
     return 0
 
 
+def reset() -> int:
+    c = sqlite3.connect(DB)
+    n = c.execute(
+        """update vacancies set draft_text = null
+            where draft_text is not null
+              and status in ('matched', 'drafted')
+              and id not in (select vacancy_id from applications
+                              where sent_at is not null)""").rowcount
+    c.commit()
+    print(f"неотправленных черновиков стёрто: {n} — перепишутся при отправке")
+    return 0
+
+
 def main() -> int:
     mode = sys.argv[1] if len(sys.argv) > 1 else "new"
     n = int(sys.argv[2]) if len(sys.argv) > 2 else 3
@@ -88,7 +106,9 @@ def main() -> int:
         return sent(n)
     if mode == "new":
         return new(n)
-    print("режим: sent или new")
+    if mode == "reset":
+        return reset()
+    print("режим: sent, new или reset")
     return 1
 
 
