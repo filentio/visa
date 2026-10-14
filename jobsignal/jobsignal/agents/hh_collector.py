@@ -55,6 +55,9 @@ HEADERS = {
         "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     ),
     "Accept-Language": "ru-RU,ru;q=0.9",
+    # Сжатие важно, когда поиск идёт через платный прокси: страница выдачи
+    # весит около мегабайта, сжатая — в пять-шесть раз меньше.
+    "Accept-Encoding": "gzip, deflate",
 }
 
 # Сколько страниц выдачи забирать на каждый поиск (50 вакансий на странице).
@@ -110,6 +113,93 @@ SETTLE_MS = int(os.environ.get("HH_SETTLE_MS", "8000"))
 # Паузы, чтобы не выглядеть перебором каталога.
 PAGE_DELAY = float(os.environ.get("HH_PAGE_DELAY", "1.5"))
 DESC_DELAY = float(os.environ.get("HH_DESC_DELAY", "0.7"))
+
+# ── Маршрут к hh: напрямую или через прокси ──────────────────────────────────
+# Публичный поиск всегда шёл напрямую: прокси платный, а поиску он был не
+# нужен. 14.10 на новом сервере все запросы получили 451 Unavailable For Legal
+# Reasons — hh не отдаёт страницы адресам из некоторых стран, и адрес сервера
+# в эту группу попал. Это не антибот и не частота: отказ с первого запроса.
+#
+# Поэтому маршрут выбирается сам. Каждый прогон первый запрос идёт напрямую
+# (ответ 451 крошечный и ничего не стоит); если пришёл 451 и прокси задан —
+# остаток прогона идёт через прокси. Так поиск сам вернётся на прямой путь,
+# если блокировку снимут или сервер переедет.
+#
+# Через прокси поиск дорогой: 12 страниц выдачи и десятки описаний в час —
+# порядка 150 МБ в сутки, пакет в 1 ГБ кончился бы за неделю. Поэтому через
+# прокси поиск ходит реже, а описаний за прогон берёт меньше.
+#   HH_SEARCH_ROUTE          auto | direct | proxy   (по умолчанию auto)
+#   HH_SEARCH_EVERY_H_PROXY  раз в сколько часов искать через прокси (3)
+#   HH_DESC_LIMIT_PROXY      описаний за прогон через прокси (40)
+HH_ROUTE = (os.environ.get("HH_SEARCH_ROUTE") or "auto").strip().lower()
+HH_SEARCH_EVERY_H_PROXY = float(os.environ.get("HH_SEARCH_EVERY_H_PROXY", "3"))
+HH_DESC_LIMIT_PROXY = int(os.environ.get("HH_DESC_LIMIT_PROXY", "40"))
+SEARCH_STAMP = Path(os.environ.get("HH_SEARCH_STAMP", "data/hh_search_last.txt"))
+ROUTE_FILE = Path(os.environ.get("HH_ROUTE_FILE", "data/hh_route.txt"))
+
+_route: Optional[str] = None      # маршрут этого прогона: direct | proxy
+_proxied_bytes = 0                # сколько ушло через прокси (по заголовкам)
+
+
+def _last_route() -> str:
+    """Каким путём шёл прошлый прогон. Нужно до первого запроса — решить,
+    пора ли вообще искать, если поиск теперь идёт через прокси."""
+    try:
+        return ROUTE_FILE.read_text().strip() or "direct"
+    except Exception:  # noqa: BLE001
+        return "direct"
+
+
+def _remember_route(route: str) -> None:
+    try:
+        ROUTE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        ROUTE_FILE.write_text(route)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[hh] маршрут не записан: %s", exc)
+
+
+def _search_due() -> bool:
+    try:
+        last = float(SEARCH_STAMP.read_text().strip())
+    except Exception:  # noqa: BLE001
+        return True
+    return (time.time() - last) >= HH_SEARCH_EVERY_H_PROXY * 3600
+
+
+def _search_done() -> None:
+    try:
+        SEARCH_STAMP.parent.mkdir(parents=True, exist_ok=True)
+        SEARCH_STAMP.write_text(str(time.time()))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[hh] метка поиска не записана: %s", exc)
+
+
+def _hh_get(url: str, **kw) -> requests.Response:
+    """GET к публичным страницам hh с выбором маршрута (см. выше)."""
+    global _route, _proxied_bytes
+    from jobsignal.hh_session import _requests_proxies
+
+    proxies = _requests_proxies()
+    if HH_ROUTE == "proxy" and proxies:
+        _route = "proxy"
+    if _route != "proxy":
+        r = requests.get(url, headers=HEADERS, timeout=25, **kw)
+        if r.status_code == 451 and HH_ROUTE == "auto" and proxies:
+            log.warning("[hh] hh отвечает 451 (недоступно по закону) на адрес "
+                        "сервера — поиск идёт через прокси, раз в %g ч",
+                        HH_SEARCH_EVERY_H_PROXY)
+            _route = "proxy"
+            _remember_route("proxy")
+        else:
+            if _route is None:
+                _route = "direct"
+                _remember_route("direct")
+            return r
+    r = requests.get(url, headers=HEADERS, timeout=40, proxies=proxies, **kw)
+    # Content-Length у сжатого ответа — это размер по проводу. Если заголовка
+    # нет, грубо оцениваем по распакованному.
+    _proxied_bytes += int(r.headers.get("Content-Length") or len(r.content) // 5)
+    return r
 
 # Поисковые запросы под три профиля
 DEFAULT_SEARCHES = [
@@ -353,7 +443,7 @@ def fetch_resume_feed(pages: int) -> list[dict]:
 def _fetch_search_page(params: dict, page: int) -> list[dict]:
     """Одна страница выдачи. Пустой список — законный ответ, а не сбой."""
     p = {**params, "page": page, "items_on_page": 50}
-    r = requests.get(SEARCH_URL, params=p, headers=HEADERS, timeout=25)
+    r = _hh_get(SEARCH_URL, params=p)
     r.raise_for_status()
 
     state = _extract_state(r.text, f"поиск '{params.get('text')}' стр. {page}")
@@ -423,7 +513,7 @@ def _find_description(view: dict, vac_id: int) -> Optional[str]:
 
 def _fetch_description(vac_id: int) -> Optional[str]:
     """Полный текст вакансии со страницы. Без него матчер судит по названию."""
-    r = requests.get(HH_VACANCY_URL.format(vac_id), headers=HEADERS, timeout=25)
+    r = _hh_get(HH_VACANCY_URL.format(vac_id))
     r.raise_for_status()
 
     # Куда нас в итоге привели. Проверять адрес нужно ДО разбора состояния:
@@ -552,13 +642,26 @@ class HHCollector:
             .all()
         }
 
+        global _route, _proxied_bytes
+        _route, _proxied_bytes = None, 0
+
         added = 0
         seen_ids: set[int] = set()
         fresh: list[dict] = []
         cards_total = 0
         requests_failed = 0
 
-        for search_params in self.searches:
+        # Через прокси поиск ходит не каждый прогон: см. HH_SEARCH_EVERY_H_PROXY.
+        # Пропуск — решение, а не поломка, поэтому ниже проверки «ни один
+        # запрос не прошёл» и «выдача пуста» при пропуске не срабатывают.
+        search_skipped = (HH_ROUTE != "direct" and _last_route() == "proxy"
+                          and not _search_due())
+        if search_skipped:
+            log.info("[hh] поиск идёт через прокси раз в %g ч — в этот прогон "
+                     "пропускаю, догружаю только долги по описаниям",
+                     HH_SEARCH_EVERY_H_PROXY)
+
+        for search_params in ([] if search_skipped else self.searches):
             found_here = 0
             for page in range(HH_PAGES):
                 try:
@@ -623,13 +726,15 @@ class HHCollector:
 
         # Ноль по одному запросу — бывает. Ноль по всем сразу или полный отказ
         # сети означает поломку: именно так выглядел мёртвый сбор с конца июня.
-        if requests_failed == len(self.searches):
+        if not search_skipped and requests_failed < len(self.searches):
+            _search_done()
+        if not search_skipped and requests_failed == len(self.searches):
             session.close()
             raise HHStructureChanged(
                 f"ни один из {len(self.searches)} запросов к hh.ru не прошёл — "
                 f"сбор не работает"
             )
-        if cards_total == 0:
+        if not search_skipped and cards_total == 0:
             session.close()
             raise HHStructureChanged(
                 f"все {len(self.searches)} поисков вернули пустую выдачу — "
@@ -677,8 +782,15 @@ class HHCollector:
                   "requests_failed": requests_failed,
                   "resume_feed": feed_cards,
                   "resume_feed_error": str(feed_error) if feed_error else None}
+        result["route"] = _route or _last_route()
+        result["search_skipped"] = search_skipped
         log.info("[hh] добавлено вакансий: %d (описаний загружено: %d)",
                  added, descriptions)
+        if _proxied_bytes:
+            # Трафик называем вслух: пакет прокси конечен, и узнать, что он
+            # кончился, лучше по росту этой цифры, чем по отказу отправки.
+            log.info("[hh] через прокси на поиск и описания ушло ~%.1f МБ",
+                     _proxied_bytes / 2**20)
         return result
 
     def _settle_descriptions(self, session, ch, fresh: list[dict]) -> dict:
@@ -700,7 +812,8 @@ class HHCollector:
         убедиться, что уводило именно эту страницу, а не все подряд
         (_wholesale_gone) — иначе закрытый доступ разом обнулил бы все долги.
         """
-        budget = HH_DESC_LIMIT
+        via_proxy = (_route or _last_route()) == "proxy"
+        budget = HH_DESC_LIMIT_PROXY if via_proxy else HH_DESC_LIMIT
         # answered — страница отдалась и разобралась (описание могло быть и
         # пустым: это тоже ответ). loaded — описание реально получено.
         # Считать их одним счётчиком нельзя: тогда «все страницы отдаются, но
