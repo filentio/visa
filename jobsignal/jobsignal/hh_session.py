@@ -98,8 +98,16 @@ def proxy_url() -> str | None:
     Формат HH_PROXY: http://user:pass@host:port (или socks5://...). Пусто —
     ходим напрямую, как раньше.
     """
-    value = (os.environ.get("HH_PROXY") or "").strip()
-    return value or None
+    value = (os.environ.get("HH_PROXY") or "").strip().strip('"').strip("'")
+    if not value:
+        return None
+    # Кабинеты прокси отдают строку как «логин:пароль@хост:порт», без схемы.
+    # curl в таком случае сам подставляет http://, поэтому 14.10 все проверки
+    # проходили, а разбор для браузера ломался: без «://» urlsplit не видит ни
+    # хоста, ни порта. Делаем как curl.
+    if "://" not in value:
+        value = "http://" + value
+    return value
 
 
 def _requests_proxies() -> dict | None:
