@@ -67,7 +67,9 @@ def playwright_proxy(url: str | None) -> dict | None:
     port = port.rstrip("/")
     problems = []
     if not sep or scheme.lower() not in ("http", "https", "socks5"):
-        problems.append(f"схема {scheme[:10]!r} вместо http://")
+        # Начало строки не показываем: без «://» там логин и пароль.
+        problems.append("нет http:// в начале"
+                        if not sep else f"схема {scheme[:10]!r} вместо http://")
     if not host:
         problems.append("нет хоста")
     if not port.isdigit():
