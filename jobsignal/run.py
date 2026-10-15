@@ -251,6 +251,11 @@ def main():
                 first = (letter.splitlines() or [""])[0]
                 print(f"       письмо ({len(letter)} симв.): {first[:90]}…")
             print()
+        # Упавший или аварийно остановленный прогон — код 1, иначе таймер
+        # ломался бы десять раз в час без единой тревоги: OnFailure смотрит
+        # только на код возврата, а ошибка оставалась напечатанной строкой.
+        if cmd == "hh-apply" and (result.get("error") or result.get("aborted")):
+            sys.exit(1)
 
     elif cmd == "find-channels":
         """Search tgstat/telemetr for new channels."""
@@ -344,18 +349,24 @@ def main():
         # чтобы в журнале была причина человеческим языком, а в телеграм ушла
         # тревога через OnFailure. 14.09 такой отказ длился 30 часов и выглядел
         # в журнале как обычные сбои разбора.
+        failed_agents: list[str] = []
         try:
             from jobsignal.llm import LLMUnavailable
-            Orchestrator().run_once()
+            results = Orchestrator().run_once()
+            failed_agents = Orchestrator.failed(results)
         except LLMUnavailable as exc:
             logging.error("[llm] ДОСТУП К МОДЕЛИ ЗАКРЫТ: %s", exc)
             logging.error("[llm] Проверь баланс и ключ в консоли провайдера. "
                           "Разбор и оценка стоят, отклики не пополняются. "
                           "Попытки постам не списаны — прогон догонит сам.")
             sys.exit(1)
+        if failed_agents:
+            logging.error("[pipeline] упали агенты: %s — прогон доведён до "
+                          "конца, но результат неполный", ", ".join(failed_agents))
         if hh_error is not None:
             logging.error("[hh] конвейер отработал, но вакансии с hh.ru не "
                           "собирались: %s", hh_error)
+        if hh_error is not None or failed_agents:
             sys.exit(1)
 
     elif cmd == "hh-replies":

@@ -371,6 +371,10 @@ class RunReport:
     # не сломано. Отдельно от error, чтобы дашборд и журнал не показывали
     # блокировку как сбой отправки.
     blocked: bool = False
+    # Прогон остановлен из-за признаков поломки (общий 403, отправки без
+    # подтверждения). Это не «очередь кончилась», а повод для тревоги:
+    # run.py выходит с кодом 1, и срабатывает OnFailure.
+    aborted: bool = False
 
     @property
     def applied(self) -> int:
@@ -394,6 +398,7 @@ class RunReport:
                 "hh закрыл раздел кабинета для нашего адреса" if self.blocked else ""),
             "error": self.error,
             "blocked": self.blocked,
+            "aborted": self.aborted,
             "rate": rate_status(),
             "items": [a.as_dict() for a in self.attempts],
             "finished_at": datetime.now(timezone.utc).isoformat(),
@@ -945,6 +950,7 @@ class HHApplyAgent(BaseAgent):
             report.attempt_budget = attempts_left
             sends_left = report.send_budget
             forbidden_streak = 0
+            unconfirmed = 0
 
             if not queue:
                 report.stopped_reason = "очередь пуста"
@@ -1027,6 +1033,7 @@ class HHApplyAgent(BaseAgent):
                                 "ни одной страницы не отдал — похоже на общий блок, "
                                 "а не на закрытые вакансии; прогон остановлен"
                             )
+                            report.aborted = True
                             log.error("[hh_apply] %s", report.stopped_reason)
                             break
                     else:
@@ -1044,6 +1051,27 @@ class HHApplyAgent(BaseAgent):
                         # Квоту пересверяем по БД: она общая с tg-откликами.
                         fresh = rate_status(session)
                         sends_left = min(sends_left - 1, fresh["allowed_now"])
+                        if sends_left > 0 and attempts_left > 0:
+                            await self._sleep()
+                    elif attempt.result is Result.UNCONFIRMED:
+                        # Клик «отправить» был, подтверждения нет: отклик МОГ
+                        # уйти. Считаем его отправкой — и по бюджету прогона,
+                        # и по паузе. Раньше это шло как обычная неудача: пауза
+                        # в пару секунд и следующая вакансия мимо квоты. Если
+                        # hh сменит маркер успеха, все настоящие отправки
+                        # станут UNCONFIRMED, и система разослала бы десятки
+                        # откликов в час, считая, что не отправила ни одного.
+                        unconfirmed += 1
+                        sends_left -= 1
+                        if unconfirmed >= 2:
+                            report.stopped_reason = (
+                                f"{unconfirmed} отправки подряд без подтверждения — "
+                                "похоже, hh изменил страницу после отклика; прогон "
+                                "остановлен, чтобы не слать вслепую"
+                            )
+                            report.aborted = True
+                            log.error("[hh_apply] %s", report.stopped_reason)
+                            break
                         if sends_left > 0 and attempts_left > 0:
                             await self._sleep()
                     elif attempts_left > 0:
@@ -1425,7 +1453,7 @@ class HHApplyAgent(BaseAgent):
 
         await submit.click()
 
-        if await self._confirmed(page):
+        if await self._confirmed(page, letter_input):
             return self._attempt(item, letter, Result.APPLIED, "отклик отправлен")
         # Подтверждения нет — возможно, hh отказал по своему лимиту, а не
         # потерял отправку. Разница принципиальная: во втором случае отклик
@@ -1467,11 +1495,11 @@ class HHApplyAgent(BaseAgent):
 
         # Подтверждение только по исчезновению поля: маркер already_applied
         # здесь бесполезен, он висит на странице с самого момента отклика и
-        # подтвердил бы отправку письма, которого не было.
+        # подтвердил бы отправку письма, которого не было. Ждём то поле,
+        # которое заполнили (см. _confirmed): селектор, ни с чем не
+        # совпадающий, «скрывается» мгновенно.
         try:
-            await page.locator(SEL["letter_input"]).first.wait_for(
-                state="hidden", timeout=8000
-            )
+            await letter_input.wait_for(state="hidden", timeout=8000)
             return True
         except PWTimeout:
             return False
@@ -1493,16 +1521,22 @@ class HHApplyAgent(BaseAgent):
             await self._screenshot(item["id"], "applied-no-letter"),
         )
 
-    async def _confirmed(self, page) -> bool:
-        """Успех: появился маркер отклика либо исчезла форма письма."""
+    async def _confirmed(self, page, field) -> bool:
+        """Успех: появился маркер отклика либо исчезло ТО САМОЕ поле письма.
+
+        Ждём исчезновения элемента, который реально заполнили, а не селектора
+        SEL["letter_input"]. Если поле нашлось только запасным селектором
+        (голый textarea), основной не совпадает ни с чем, а Playwright считает
+        отсутствующий элемент скрытым — и ожидание «скрылось» выполнялось
+        мгновенно. Нерабочая отправка записывалась как APPLIED: отклик в базе,
+        «Отклик отправлен» в телеграм, а работодатель ничего не получил.
+        """
         from playwright.async_api import TimeoutError as PWTimeout
 
         if await self._visible(page, SEL["already_applied"], timeout=8):
             return True
         try:
-            await page.locator(SEL["letter_input"]).first.wait_for(
-                state="hidden", timeout=5000
-            )
+            await field.wait_for(state="hidden", timeout=5000)
             return True
         except PWTimeout:
             return False
