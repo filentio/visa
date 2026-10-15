@@ -228,7 +228,10 @@ def api_stats():
     working = session.query(func.count(Vacancy.id)).filter(
         Vacancy.status.in_([VacancyStatus.matched, VacancyStatus.drafted])
     ).scalar()
-    applied = session.query(func.count(Application.id)).scalar()
+    # Только реально отправленные: черновики (sent_at пуст) раньше тоже
+    # считались откликами, и цифра в шапке была завышена.
+    applied = (session.query(func.count(Application.id))
+               .filter(Application.sent_at.isnot(None)).scalar())
     replied = session.query(func.count(Application.id)).filter(
         Application.replied_at.isnot(None)
     ).scalar()
@@ -1232,7 +1235,12 @@ def api_cover_templates_active():
 
 # ── serve ─────────────────────────────────────────────────────────────────────
 
-def serve(host: str = "0.0.0.0", port: int = 5000):
+def serve(host: str | None = None, port: int = 5000):
+    # По умолчанию только localhost: смотрим через SSH-туннель
+    # (ssh -L 5000:localhost:5000). Раньше слушал 0.0.0.0, и при пустом
+    # DASHBOARD_PASS и выключенном фаерволе база с откликами и письмами была
+    # бы открыта всему интернету. Снаружи — только явным DASHBOARD_HOST.
+    host = host or os.environ.get("DASHBOARD_HOST", "127.0.0.1")
     try:
         from waitress import serve as waitress_serve
         log.info("jobsignal dashboard on %s:%s", host, port)

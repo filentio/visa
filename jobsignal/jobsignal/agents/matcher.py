@@ -247,6 +247,10 @@ class MatcherAgent(BaseAgent):
                     matched += 1
                 else:
                     skipped += 1
+                # Сохраняем по ходу: оценка оплачена, и падение на 190-й
+                # вакансии из 200 не должно выбрасывать 189 готовых.
+                if scored % 25 == 0:
+                    s.commit()
             s.commit()
 
         log.info("[matcher] оценено: %d, прошли порог (%d): %d, ниже порога: %d, ошибок: %d",

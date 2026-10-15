@@ -32,7 +32,7 @@ import logging
 import os
 import asyncio
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -233,7 +233,13 @@ def _parse_time(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value)
+        dt = datetime.fromisoformat(value)
+        # В UTC, как остальные времена в базе: hh отдаёт московское
+        # «+03:00», и в строковых сравнениях дат такие отметки ехали на три
+        # часа относительно отправок.
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc)
+        return dt
     except ValueError:
         log.warning("[hh_replies] не разобрал время %r", value)
         return None
