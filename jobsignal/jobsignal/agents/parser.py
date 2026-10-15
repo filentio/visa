@@ -176,11 +176,25 @@ class Parser:
             batch = limit
 
         session = self._sf()
+        # Порядок: сначала hh, потом свежие. Без сортировки SQLite отдаёт от
+        # самых старых, и 15.10 на новом сервере это остановило отклики: первой
+        # собралась история 38 телеграм-каналов за прошлые дни, разборщик жевал
+        # её по 200 за прогон, а 380 свежих вакансий с hh — единственного
+        # канала с автоматическим откликом — сутки стояли в конце очереди.
+        # Старые посты при этом чаще всего уже закрытые вакансии.
+        from sqlalchemy import case
+        from jobsignal.db import Channel
+        hh_ids = [cid for (cid,) in session.query(Channel.id)
+                  .filter(Channel.handle.in_(("hh_ru", "hh.ru"))).all()]
+        hh_first = (case((RawPost.channel_id.in_(hh_ids), 0), else_=1)
+                    if hh_ids else None)
+        order = ([hh_first] if hh_first is not None else []) + [RawPost.id.desc()]
         posts = (
             session.query(RawPost)
             .filter(RawPost.parsed == False, RawPost.text.isnot(None),
                     RawPost.awaiting_details == False,
                     RawPost.parse_attempts < MAX_PARSE_ATTEMPTS)
+            .order_by(*order)
             .limit(batch)
             .all()
         )
