@@ -123,8 +123,25 @@ def _get_active_template() -> dict | None:
         return None
 
 
+def _vacancy_text_by_id(vid: int | None) -> str:
+    """Полный текст вакансии по её номеру: исходный пост, иначе пересказ."""
+    if not vid:
+        return ""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        row = conn.execute(
+            "SELECT coalesce(p.text, v.description, '') FROM vacancies v "
+            "LEFT JOIN raw_posts p ON p.id = v.raw_post_id WHERE v.id = ?",
+            (vid,)).fetchone()
+        conn.close()
+        return (row[0] if row else "") or ""
+    except Exception as e:  # noqa: BLE001 — без текста письмо всё равно пишется
+        log.warning("[notify] текст вакансии #%s не прочитан: %s", vid, e)
+        return ""
+
+
 def _cover_text(role: str, company: str, profile_key: str, recruiter_name: str = "",
-                vacancy_text: str = "") -> str:
+                vacancy_text: str = "", vacancy_id: int | None = None) -> str:
     """Generate cover letter using active template + real resume text. No hallucinations.
 
     vacancy_text — текст самой вакансии. Раньше модель получала только
@@ -133,6 +150,13 @@ def _cover_text(role: str, company: str, profile_key: str, recruiter_name: str =
     вакансии и потому не подходят ни к одной.
     """
     from jobsignal.letter_style import HUMAN_VOICE, style_tells
+
+    # Текст вакансии по номеру, если вызывающий его не передал. Раньше кнопки
+    # дашборда и бота вызывали генератор без текста, письмо писалось по одному
+    # названию роли, сохранялось в draft_text — и автоотклик отправлял именно
+    # его, а не письмо по вакансии.
+    if not (vacancy_text or "").strip() and vacancy_id:
+        vacancy_text = _vacancy_text_by_id(vacancy_id)
     from jobsignal.agents.resume_parser import get_resume_text
     from jobsignal.config import get_config
     from jobsignal.llm import complete_text
@@ -308,7 +332,7 @@ class NotifyBot:
             _send(text, markup)
 
             # second message: forward-ready with resume
-            cover = _cover_text(role, company, profile_key)
+            cover = _cover_text(role, company, profile_key, vacancy_id=vid)
             caption = f"👇 <i>Перешли это сообщение рекрутёру</i>\n\n{_esc(cover)}"
             from jobsignal.agents.resume_parser import pdf_path_for
             resume_key = PROFILE_KEY_MAP.get(profile_key, "pm")
@@ -444,7 +468,7 @@ class NotifyBot:
             return
 
         role, company = row
-        cover = _cover_text(role or "", company or "", profile_key)
+        cover = _cover_text(role or "", company or "", profile_key, vacancy_id=vid)
 
         msg = (
             f"📋 <b>Сопроводительное письмо</b>\n\n"

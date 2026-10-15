@@ -128,10 +128,18 @@ def index():
     try:
         with open("config/profiles.yaml") as f:
             data = yaml.safe_load(f)
+        # Ключ фильтра — имя профиля: именно оно лежит в
+        # match_scores.profile_key. Раньше ключом бралось поле key, которого в
+        # profiles.yaml нет: KeyError уводил в запасной словарь с ключами
+        # ai_pm/cpo/pm, и фильтр по профилю всегда возвращал пустой список.
         for p in data.get("profiles", []):
-            profiles[p["key"]] = p["name"]
+            if p.get("name"):
+                profiles[p["name"]] = p["name"]
     except Exception:
-        profiles = {"ai_pm": "Senior AI PM", "cpo": "CPO / Head of Product", "pm": "Senior PM/PO"}
+        profiles = {}
+    if not profiles:
+        profiles = {n: n for n in ("Senior AI PM", "CPO / Head of Product",
+                                   "Senior PM/PO")}
     return render_template("index.html", styles=list(STYLES.keys()),
                            profiles=profiles, outreach_mode=_outreach_mode())
 
@@ -264,6 +272,7 @@ def api_generate_draft():
             company=v.company or "",
             profile_key=best_profile,
             recruiter_name="",
+            vacancy_id=v.id,
         )
         if not text:
             raise ValueError("пустой ответ модели")

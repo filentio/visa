@@ -21,6 +21,7 @@ from sqlalchemy import select
 
 from ..db import RawPost, get_session_factory
 from .base import BaseAgent
+from .parser import MAX_PARSE_ATTEMPTS
 from .dedup import _normalize
 
 log = logging.getLogger("jobsignal")
@@ -75,7 +76,16 @@ class RawDeduplicatorAgent(BaseAgent):
                     p.parsed = True
                     dups += 1
                     continue
-                seen.add(sig)
+                # Неразобранный оригинал заслоняет репосты, только если сам
+                # дойдёт до разбора. Застрявший (исчерпал попытки, например
+                # в простой модели) или ждущий описания не годится: раньше его
+                # хеш тоже шёл в seen, репост помечался дублем, и вакансия
+                # терялась в обоих экземплярах — обнуление попыток по подсказке
+                # из лога репост уже не возвращало.
+                stuck = ((p.parse_attempts or 0) >= MAX_PARSE_ATTEMPTS
+                         or bool(getattr(p, "awaiting_details", False)))
+                if not stuck:
+                    seen.add(sig)
             s.commit()
 
         log.info("[raw_dedup] к разбору было: %d, отсеяно дублей: %d, "
