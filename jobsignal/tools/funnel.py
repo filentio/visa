@@ -46,20 +46,26 @@ def main() -> int:
     print("   не разобраны:               ",
           q("select count(*) from raw_posts where channel_id=? and parsed=0 "
             "and awaiting_details=0", hh_id))
+    # Разборщик общий для всех источников: если он тонет в телеграме, hh
+    # стоит в той же очереди. Поэтому общий хвост рядом.
+    print("   очередь разбора всего:      ",
+          q("select count(*) from raw_posts where parsed=0 and awaiting_details=0 "
+            "and text is not null and coalesce(parse_attempts,0) < 3"),
+          f"(за прогон берётся {os.environ.get('PARSER_BATCH_LIMIT', '200')})")
 
     base = ("from vacancies v where v.contact_type='hh' and v.is_primary=1 "
             "and v.created_at > datetime('now', ?)")
     print("\n2. вакансий hh создано:        ", q("select count(*) " + base, since))
     print("   по статусам:                ",
           dict(c.execute("select v.status, count(*) " + base +
-                         " group by 1 order by 2 desc", since).fetchall()))
+                         " group by 1 order by 2 desc", (since,)).fetchall()))
     print("   скрыто как дубль:           ",
           q("select count(*) from vacancies where contact_type='hh' "
             "and is_primary=0 and created_at > datetime('now', ?)", since))
 
     rows = c.execute(
         "select (select max(score) from match_scores where vacancy_id=v.id) s "
-        + base, since).fetchall()
+        + base, (since,)).fetchall()
     scores = [r[0] for r in rows if r[0] is not None]
     if scores:
         buckets = {f"от {auto}": 0, f"{match}-{auto-1}": 0, f"ниже {match}": 0}
@@ -85,12 +91,12 @@ def main() -> int:
     print("\n5. откликов отправлено:        ",
           dict(c.execute("select channel, count(*) from applications "
                          "where sent_at > datetime('now', ?) group by 1",
-                         since).fetchall()) or 0)
+                         (since,)).fetchall()) or 0)
     try:
         print("   попыток и их исходы:        ",
               dict(c.execute("select result, count(*) from hh_apply_attempts "
                              "where created_at > datetime('now', ?) group by 1",
-                             since).fetchall()) or "нет")
+                             (since,)).fetchall()) or "нет")
     except sqlite3.OperationalError:
         print("   попыток и их исходы:         таблицы ещё нет")
     return 0
