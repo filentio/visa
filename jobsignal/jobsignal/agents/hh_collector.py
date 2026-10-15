@@ -820,6 +820,11 @@ class HHCollector:
         # текста в них больше нет» (переехало поле описания) выглядело бы
         # так же, как «сегодня попались вакансии без описания».
         answered = loaded = failed = walled = given_up = gone = 0
+        # Страница вакансии с непривычным состоянием. Одна такая — свойство
+        # этой страницы, а не поломка сбора. Раньше первое же исключение
+        # роняло весь прогон: свежие карточки не сохранялись, и раз страница
+        # стояла первой в долгах, так повторялось каждый прогон.
+        structure = 0
         # Посты, у которых вакансии больше нет. Признак снимаем не сразу, а
         # когда прогон дошёл до конца: см. _wholesale_gone ниже.
         gone_posts: list[RawPost] = []
@@ -842,10 +847,17 @@ class HHCollector:
             post.detail_attempts = (post.detail_attempts or 0) + 1
             try:
                 desc = _fetch_description(int(post.tg_message_id))
-            except HHStructureChanged:
-                session.commit()       # попытки уже потрачены — не терять их
-                session.close()
-                raise
+            except HHStructureChanged as exc:
+                structure += 1
+                log.warning("[hh] %s: %s (попытка %d из %d)", post.tg_message_id,
+                            exc, post.detail_attempts, DETAIL_GIVE_UP)
+                if post.detail_attempts >= DETAIL_GIVE_UP:
+                    # Отпускаем в разбор: иначе пост навсегда висел бы с
+                    # awaiting_details=1 вне долгов и вне парсера.
+                    post.awaiting_details = False
+                    given_up += 1
+                time.sleep(DESC_DELAY)
+                continue
             except HHVacancyWalled as exc:
                 walled += 1
                 if post.detail_attempts >= DETAIL_GIVE_UP:
@@ -919,9 +931,11 @@ class HHCollector:
                 answered += 1
                 if item["description"]:
                     loaded += 1
-            except HHStructureChanged:
-                session.close()
-                raise
+            except HHStructureChanged as exc:
+                # Как с заглушкой: пост сохранится с awaiting_details=1 и
+                # попадёт в долги, где его добьёт счётчик попыток.
+                structure += 1
+                log.warning("[hh] %s: %s", item["id"], exc)
             except HHVacancyWalled as exc:
                 # Пост ещё не создан: сохранится с awaiting_details=1 и
                 # попадёт в долги — там его добьёт счётчик попыток.
@@ -954,13 +968,14 @@ class HHCollector:
         # нет», и снятая вакансия в долгах — обычное дело. Их сторожит
         # отдельный порог ниже: он смотрит не на количество само по себе, а
         # на то, открылась ли хоть одна страница.
-        attempted = answered + failed + walled
+        attempted = answered + failed + walled + structure
         if attempted >= 5 and answered == 0:
             session.close()
             raise HHStructureChanged(
                 f"ни одна страница вакансии не открылась за {attempted} "
-                f"попыток (заглушка: {walled}, ошибки сети: {failed}) — "
-                f"страницы недоступны целиком, а не поодиночке"
+                f"попыток (заглушка: {walled}, ошибки сети: {failed}, "
+                f"непонятная разметка: {structure}) — страницы недоступны "
+                f"целиком, а не поодиночке"
             )
         if answered >= 5 and loaded == 0:
             session.close()

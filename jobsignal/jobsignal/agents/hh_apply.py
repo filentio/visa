@@ -846,15 +846,29 @@ class HHApplyAgent(BaseAgent):
                      about, message_id)
 
     def _seen_with_result(self, session, vacancy_id: int, result: Result) -> int:
-        """Сколько раз эта вакансия уже получала такой исход, включая текущий:
-        _record пишет попытку в журнал до того, как считает её здесь."""
-        return session.execute(
+        """Сколько БОЕВЫХ попыток ПОДРЯД у вакансии закончились этим исходом,
+        включая текущую (_record пишет её в журнал до подсчёта).
+
+        Пороги FORBIDDEN_GIVE_UP и NO_RESPOND_GIVE_UP задуманы как «N прогонов
+        подряд». Раньше считались все записи за всю историю, вместе с пробными
+        прогонами без отправки: три ручных dry-run при недогруженной вёрстке
+        убирали вакансию из очереди без единой боевой попытки, а один 403
+        месяц назад плюс два свежих снимали её при единичном сбое.
+        """
+        rows = session.execute(
             sql_text(
-                "SELECT count(*) FROM hh_apply_attempts "
-                "WHERE vacancy_id = :vid AND result = :res"
+                "SELECT result FROM hh_apply_attempts "
+                "WHERE vacancy_id = :vid AND dry_run = 0 "
+                "ORDER BY id DESC LIMIT 20"
             ),
-            {"vid": vacancy_id, "res": result.value},
-        ).scalar() or 0
+            {"vid": vacancy_id},
+        ).fetchall()
+        streak = 0
+        for (res,) in rows:
+            if res != result.value:
+                break
+            streak += 1
+        return streak
 
     def _set_status(self, session, attempt: Attempt, status: VacancyStatus) -> None:
         """Статус вакансии — сразу всем строкам БД про эту же вакансию hh.
