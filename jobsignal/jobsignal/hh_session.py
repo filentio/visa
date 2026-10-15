@@ -342,8 +342,15 @@ OWNER_SELECTORS = ('[data-qa="mainmenu_profileAndResumes"]',
 SETTLE_MS = int(os.environ.get("HH_SETTLE_MS", "8000"))
 
 
-async def check_page(page) -> tuple[bool, str]:
+async def check_page(page) -> tuple[bool | None, str]:
     """Жива ли сессия в уже открытой странице Playwright.
+
+    Три исхода: True — жива, False — погашена (гостевой вид, редирект на
+    логин), None — НЕ УДАЛОСЬ ПРОВЕРИТЬ (страница не открылась через прокси,
+    нет ни меню, ни кнопки входа). Раньше третий исход считался мёртвой
+    сессией: медленный прокси давал тревогу «сессия не работает» с полной
+    инструкцией перелогина, и человек проходил пароль, SMS и капчу зря, хотя
+    cookies были рабочими.
 
     Единственный источник правды о логине для всего проекта: hh_apply
     зовёт эту же функцию.
@@ -357,7 +364,9 @@ async def check_page(page) -> tuple[bool, str]:
     try:
         await page.goto(LOGIN_PROBE_URL, wait_until="domcontentloaded")
     except Exception as exc:  # noqa: BLE001
-        return False, f"страница {LOGIN_PROBE_URL} не открылась: {exc}"
+        return None, (f"страница {LOGIN_PROBE_URL} не открылась (сеть или "
+                      f"прокси, о сессии это ничего не говорит): "
+                      f"{str(exc).splitlines()[0][:150]}")
     url = page.url
     if any(marker in url for marker in LOGIN_URL_MARKERS):
         return False, f"hh редиректит на логин ({url}) — сессия разлогинена"
@@ -378,12 +387,12 @@ async def check_page(page) -> tuple[bool, str]:
                        f"сессию погасили, нужен новый вход")
     # Ни того ни другого: вёрстка сменилась либо страница не догрузилась.
     # Молчать нельзя — иначе снова будем считать неизвестность исправностью.
-    return False, (f"{url}: на странице нет ни меню соискателя, ни кнопки "
-                   f"входа — опоры проверки устарели, посмотри глазами "
-                   f"(tools/probe_login.py)")
+    return None, (f"{url}: на странице нет ни меню соискателя, ни кнопки "
+                  f"входа — страница не догрузилась или опоры проверки "
+                  f"устарели, посмотри глазами (tools/probe_login.py)")
 
 
-async def _probe_async(path: Path, headless: bool) -> tuple[bool, str]:
+async def _probe_async(path: Path, headless: bool) -> tuple[bool | None, str]:
     from playwright.async_api import async_playwright
 
     async with async_playwright() as pw:
@@ -414,7 +423,7 @@ async def _probe_async(path: Path, headless: bool) -> tuple[bool, str]:
                 log.warning("[hh_session] браузер не закрылся: %s", exc)
 
 
-def probe(path: Path | None = None, headless: bool = True) -> tuple[bool, str]:
+def probe(path: Path | None = None, headless: bool = True) -> tuple[bool | None, str]:
     """Сходить на hh и узнать, пускают ли нас. Запускает Chromium."""
     import asyncio
 
@@ -423,10 +432,10 @@ def probe(path: Path | None = None, headless: bool = True) -> tuple[bool, str]:
         return asyncio.run(_probe_async(path, headless))
     except Exception as exc:  # noqa: BLE001 — проба не должна ронять прогон
         log.error("[hh_session] проба не выполнилась: %s", exc, exc_info=True)
-        return False, f"проба не выполнилась ({type(exc).__name__}: {exc})"
+        return None, f"проба не выполнилась ({type(exc).__name__}: {exc})"
 
 
-def record_probe(alive: bool) -> None:
+def record_probe(alive: bool | None) -> None:
     """Записать результат пробы, сделанной чужим кодом (отклик уже в браузере).
 
     Отклик открывает hh сам и проверяет логин по дороге. Если не записать
@@ -434,6 +443,8 @@ def record_probe(alive: bool) -> None:
     плановой пробе, а «последний раз пускали» в тревоге покажет время
     полусуточной давности вместо настоящего.
     """
+    if alive is None:
+        return          # проверка не состоялась — наблюдения нет
     journal = _track_fingerprint(read_journal(), inspect_state())
     journal["last_probe_at"] = _iso(_now())
     if alive:
@@ -509,6 +520,14 @@ def status(probe_live: bool | None = None, headless: bool = True) -> SessionStat
     alive, detail = probe(info.path, headless=headless)
     st.probed = True
     st.probe_detail = detail
+    if alive is None:
+        # Проверить не удалось — сессию мёртвой не объявляем и журнал не
+        # трогаем: следующая проба повторит попытку.
+        log.warning("[hh_session] живая проба не состоялась: %s", detail)
+        if not verdict:
+            st.reason = f"живую пробу провести не удалось: {detail}"
+        write_journal(journal)
+        return st
     journal["last_probe_at"] = _iso(_now())
     if alive:
         journal["last_alive_at"] = journal["last_probe_at"]

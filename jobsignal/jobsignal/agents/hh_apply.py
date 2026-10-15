@@ -969,6 +969,10 @@ class HHApplyAgent(BaseAgent):
 
             async with self._browser() as page:
                 if not await self._logged_in(page):
+                    if getattr(self, "_session_unknown", False):
+                        report.error = (f"не удалось проверить сессию hh.ru "
+                                        f"(сеть или прокси): {self._session_detail}")
+                        return report
                     report.error = (
                         f"сессия hh.ru недействительна ({self.state_path}): "
                         f"{self._session_detail}. Инструкция, как перелогиниться, "
@@ -1162,6 +1166,13 @@ class HHApplyAgent(BaseAgent):
         """
         alive, detail = await hh_session.check_page(page)
         hh_session.record_probe(alive)
+        if alive is None:
+            # Не удалось проверить (сеть, прокси) — это не разлогин. Прогон
+            # прекращаем, но без тревоги «перелогинься»: см. run().
+            log.error("[hh_apply] сессию проверить не удалось: %s", detail)
+            self._session_detail = detail
+            self._session_unknown = True
+            return False
         if not alive:
             log.error("[hh_apply] сессия не прошла проверку: %s", detail)
             self._session_detail = detail
