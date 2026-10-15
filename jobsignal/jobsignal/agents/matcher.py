@@ -11,6 +11,7 @@ MATCHED, если лучший балл >= порога, иначе SKIPPED.
 from __future__ import annotations
 
 import logging
+import re
 import os
 
 from sqlalchemy import func, select
@@ -261,20 +262,46 @@ class MatcherAgent(BaseAgent):
         if not isinstance(raw, list):
             return result
         lower = {n.lower(): n for n in names}
-        for i, item in enumerate(raw):
-            if not isinstance(item, dict):
-                continue
-            pname = str(item.get("profile", "")).strip()
-            key = lower.get(pname.lower())
-            if key is None and i < len(names):  # имя не совпало — берём по позиции
-                key = names[i]
-            if key is None:
-                continue
+
+        def _parse(item):
             try:
                 score = int(round(float(item.get("score", 0))))
             except (TypeError, ValueError):
-                continue
-            score = max(0, min(100, score))
+                return None
             reason = item.get("reason")
-            result[key] = (score, str(reason)[:500] if reason else None)
+            return max(0, min(100, score)), (str(reason)[:500] if reason else None)
+
+        # Два прохода. Сначала точные совпадения имён, потом по позиции —
+        # и только в профили, оставшиеся без оценки. Раньше было в один
+        # проход: элемент с неузнанным именем («Senior AI Product Manager»)
+        # по позиции попадал в чужой профиль и затирал его точную оценку, а
+        # свой профиль оставался пустым. Лучший профиль выбирался неверно, и
+        # письмо с резюме шли не под ту роль.
+        pending = []
+        for i, item in enumerate(raw):
+            if not isinstance(item, dict):
+                continue
+            key = lower.get(str(item.get("profile", "")).strip().lower())
+            if key is None:
+                pending.append((i, item))
+                continue
+            parsed = _parse(item)
+            if parsed is not None:
+                result[key] = parsed
+        def _words(x: str) -> set[str]:
+            return {w for w in re.split(r"[^\w]+", x.lower()) if len(w) > 1}
+
+        for i, item in pending:
+            free = [n for n in names if n not in result]
+            if not free:
+                break
+            parsed = _parse(item)
+            if parsed is None:
+                continue
+            # Среди свободных — с наибольшим числом общих слов («Senior AI
+            # Product Manager» → «Senior AI PM»); при равенстве по позиции.
+            got = _words(str(item.get("profile", "")))
+            best = max(free, key=lambda n: (len(got & _words(n)),
+                                            n == (names[i] if i < len(names) else None)))
+            result[best] = parsed
         return result

@@ -367,7 +367,11 @@ class NotifyBot:
             ).fetchone()
             # create application record
             from datetime import datetime, timezone
-            now = datetime.now(timezone.utc).isoformat()
+            # Формат как у SQLAlchemy и datetime('now'): «ГГГГ-ММ-ДД ЧЧ:ММ:СС».
+            # isoformat() давал «…T01:00:00+00:00», а квота сравнивает время
+            # строками: «T» больше пробела, и ручная отметка считалась «в
+            # пределах часа» до конца суток, съедая квоту автоотклика.
+            now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
             # Кнопку жмёт человек и отклик отправляет сам, поэтому канал —
             # manual, а не telegram: иначе ручные отметки неотличимы от писем,
             # которые действительно отправила система.
@@ -467,11 +471,23 @@ class NotifyBot:
             try:
                 r = requests.get(
                     _api("getUpdates"),
+                    # allowed_updates Telegram ждёт строкой JSON: список из
+                    # requests уходил повторяющимися параметрами.
                     params={"offset": offset, "timeout": 30,
-                            "allowed_updates": ["callback_query"]},
+                            "allowed_updates": json.dumps(["callback_query"])},
                     timeout=35,
                 )
-                updates = r.json().get("result", [])
+                data = r.json()
+                if not data.get("ok"):
+                    # 409 — второй экземпляр бота или установлен webhook, 401 —
+                    # отозван токен. Раньше это молча давало пустой список, и
+                    # цикл без паузы долбил Telegram, а кнопки не работали.
+                    log.error("[notify] getUpdates: %s %s — пауза %d с",
+                              data.get("error_code"), data.get("description"),
+                              max(interval, 30))
+                    time.sleep(max(interval, 30))
+                    continue
+                updates = data.get("result", [])
                 for upd in updates:
                     offset = upd["update_id"] + 1
                     if "callback_query" in upd:

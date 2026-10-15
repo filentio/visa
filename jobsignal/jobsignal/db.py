@@ -256,10 +256,30 @@ def _ensure_late_columns(engine) -> None:
                 conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
 
 
+def _normalize_timestamps(engine) -> None:
+    """Привести времена откликов к одному виду «ГГГГ-ММ-ДД ЧЧ:ММ:СС».
+
+    Кнопка бота записывала isoformat() («…T…+00:00»), остальной код — с
+    пробелом. Квота сравнивает строками, и такие отметки считались
+    свежими весь день. Запись исправлена; здесь выравниваются уже
+    записанные строки. Идемпотентно и дёшево: трогает только строки с «T».
+    """
+    with engine.begin() as conn:
+        for col in ("sent_at", "created_at", "replied_at"):
+            try:
+                conn.exec_driver_sql(
+                    f"UPDATE applications SET {col} = "
+                    f"replace(substr({col}, 1, 19), 'T', ' ') "
+                    f"WHERE {col} LIKE '____-__-__T%'")
+            except Exception:  # noqa: BLE001 — колонки может не быть в старой базе
+                pass
+
+
 def get_session_factory(url: str | None = None):
     engine = get_engine(url)
     Base.metadata.create_all(engine)
     _ensure_late_columns(engine)
+    _normalize_timestamps(engine)
     return sessionmaker(bind=engine)
 
 from datetime import datetime, timezone
