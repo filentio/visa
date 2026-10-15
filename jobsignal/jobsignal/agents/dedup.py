@@ -31,8 +31,24 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+_HH_ID_RE = re.compile(r"hh\.(?:ru|kz)/vacancy/(\d+)")
+
+
 def signature(v: Vacancy) -> str:
-    """Ключ дубля: роль+компания, иначе — начало описания/текста."""
+    """Ключ дубля.
+
+    Номер вакансии hh — точный ключ, и он главнее названия. Раньше ключ
+    строился только из роли и компании, и пять разных «Product Manager» Сбера
+    склеивались в одну группу: основной оставалась одна, четыре настоящие
+    вакансии не доходили ни до оценки, ни до отклика. Репост той же вакансии
+    hh из телеграма при этом по-прежнему склеивается — номер тот же.
+
+    Вакансия без роли и без описания раньше давала ключ от пустой строки, и
+    все такие сливались в одну группу. Теперь у каждой свой ключ.
+    """
+    m = _HH_ID_RE.search(v.link or "")
+    if m:
+        return f"hh{m.group(1)}"
     role = _normalize(v.role or "")
     company = _normalize(v.company or "")
     if role and company:
@@ -41,7 +57,18 @@ def signature(v: Vacancy) -> str:
         base = f"{role}|{_normalize((v.description or '')[:60])}"
     else:
         base = _normalize((v.description or "")[:120])
+    if not base:
+        return f"id{v.id}"
     return hashlib.sha1(base.encode("utf-8")).hexdigest()[:16]
+
+
+def _primary_rank(v: Vacancy):
+    """Кто в группе основной. Сначала уже оценённая (matched), иначе основная
+    могла смениться между прогонами, и оценённая вакансия молча выпадала из
+    очереди отклика. Потом самое полное описание, потом самая ранняя — чтобы
+    выбор был устойчивым."""
+    return (0 if v.status == VacancyStatus.matched else 1,
+            -len(v.description or ""), v.id or 0)
 
 
 class DeduplicatorAgent(BaseAgent):
@@ -62,8 +89,7 @@ class DeduplicatorAgent(BaseAgent):
             dup_groups = 0
             dup_count = 0
             for sig, items in groups.items():
-                # основная = с самым длинным описанием (самая полная версия)
-                items.sort(key=lambda x: len(x.description or ""), reverse=True)
+                items.sort(key=_primary_rank)
                 for i, v in enumerate(items):
                     v.dedup_group = sig
                     v.is_primary = (i == 0)

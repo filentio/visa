@@ -68,6 +68,37 @@ def _normalize_handle(raw: Optional[str]) -> Optional[str]:
     return None
 
 
+# Хендл в тексте: собака НЕ внутри почтового адреса. Без этой проверки
+# «hr@avito.ru» давал контакт «@avito» — постороннего человека, которому
+# tg_outreach предлагал написать, а сама почта терялась.
+_TEXT_HANDLE_RE = re.compile(r"(?<![A-Za-z0-9._%+-])@([A-Za-z0-9_]{5,32})\b")
+_EMAIL_RE = re.compile(
+    r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
+_JUNK_EMAIL = ("noreply", "no-reply", "example.", "support@", "info@hh.")
+
+
+def _handles_in_text(text: str) -> list[str]:
+    """Валидные телеграм-хендлы из текста, без повторов, по порядку."""
+    out: list[str] = []
+    for h in _TEXT_HANDLE_RE.findall(text or ""):
+        cand = _normalize_handle(f"@{h}")
+        if cand and cand not in out:
+            out.append(cand)
+    return out
+
+
+def _emails_in_text(text: str) -> list[str]:
+    """Почтовые адреса из текста. Замер 07.10: из 567 телеграм-вакансий
+    «без контакта» 302 содержали почту рекрутёра, а разбор её не сохранял."""
+    out: list[str] = []
+    for e in _EMAIL_RE.findall(text or ""):
+        el = e.lower()
+        if any(j in el for j in _JUNK_EMAIL) or el in out:
+            continue
+        out.append(el)
+    return out
+
+
 # ── link extraction from raw HTML/text ───────────────────────────────────────
 
 # Placeholder patterns the LLM sometimes returns instead of real URLs
@@ -353,41 +384,63 @@ class Parser:
         # В посте может быть несколько вакансий (дайджест) — каждая становится
         # отдельной строкой, иначе из подборки доходила бы только первая.
         made = 0
-        for data in items:
-            if not isinstance(data, dict) or not data.get("is_vacancy"):
-                continue
-            self._create_vacancy(post, data, text, text_links, session)
+        real_items = [d for d in items
+                      if isinstance(d, dict) and d.get("is_vacancy")]
+        digest = len(real_items) > 1
+        for data in real_items:
+            self._create_vacancy(post, data, text, text_links, session,
+                                 digest=digest)
             made += 1
         if made:
             return "vacancy", made
         return "skipped", 0
 
     def _create_vacancy(self, post: RawPost, data: dict, text: str,
-                        text_links: list[str], session) -> None:
+                        text_links: list[str], session,
+                        digest: bool = False) -> None:
+        """digest — в посте несколько вакансий.
 
+        Для дайджеста ссылки и контакты всего текста относятся к разным
+        вакансиям. Раньше каждая вакансия брала первую hh-ссылку и первый
+        @хендл всего поста: у «PM в A» и «CPO в B» оказывалась одна ссылка,
+        и отклик мог уйти в вакансию A с письмом, написанным под B, а вакансия
+        B терялась. Теперь в дайджесте берётся то, что модель вернула для
+        этой вакансии; общее из текста — только если оно в посте одно.
+        """
         # ── link: prefer extracted links, use LLM link only if real ──────────
         llm_link = data.get("link")
         if not _is_real_link(llm_link):
             llm_link = None
 
-        all_links = text_links[:]
-        if llm_link and llm_link not in all_links:
-            all_links.insert(0, llm_link)
-
-        best_link = _pick_best_link(all_links, post.post_url)
+        if digest:
+            real = [u for u in text_links if _is_real_link(u)]
+            if llm_link:
+                best_link = llm_link
+            elif len(set(real)) == 1:
+                best_link = real[0]
+            else:
+                best_link = post.post_url
+        else:
+            all_links = text_links[:]
+            if llm_link and llm_link not in all_links:
+                all_links.insert(0, llm_link)
+            best_link = _pick_best_link(all_links, post.post_url)
 
         # ── recruiter_handle: validate strictly ───────────────────────────────
         raw_handle = data.get("recruiter_handle")
         clean_handle = _normalize_handle(raw_handle)
 
-        # Also try to find @handle in text if LLM missed or returned garbage
+        # Also try to find @handle in text if LLM missed or returned garbage.
+        # В дайджесте — только если хендл в посте один на всех.
         if not clean_handle:
-            tg_in_text = re.findall(r"@([A-Za-z0-9_]{5,32})", text)
-            for h in tg_in_text:
-                candidate = f"@{h}"
-                if _normalize_handle(candidate):
-                    clean_handle = candidate
-                    break
+            in_text = _handles_in_text(text)
+            if in_text and (not digest or len(in_text) == 1):
+                clean_handle = in_text[0]
+
+        # Почта рекрутёра: так же, в дайджесте только единственная.
+        emails = _emails_in_text(text)
+        recruiter_email = (emails[0] if emails and (not digest or len(emails) == 1)
+                           else None)
 
         # If the "handle" was actually a linkedin/external link, put it in link
         if raw_handle and not clean_handle and _is_real_link(raw_handle):
@@ -402,6 +455,12 @@ class Parser:
             link = best_link
 
         contact_type = detect_contact_type(_V())
+        # Почта как способ отклика — когда другого нет. Ссылку на сам пост
+        # канала detect_contact_type считает телеграмом, но писать туда
+        # некому, поэтому без личного хендла почта главнее.
+        if recruiter_email and (contact_type == "unknown"
+                                or (contact_type == "tg" and not clean_handle)):
+            contact_type = "email"
 
         # ── save vacancy ──────────────────────────────────────────────────────
         v = Vacancy(
@@ -410,6 +469,7 @@ class Parser:
             role=data.get("role"),
             company=data.get("company"),
             recruiter_handle=clean_handle,
+            recruiter_email=recruiter_email,
             salary=data.get("salary"),
             location=data.get("location"),
             link=best_link,
