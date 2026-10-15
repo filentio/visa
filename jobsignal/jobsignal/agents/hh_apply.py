@@ -357,6 +357,37 @@ class Attempt:
         }
 
 
+# Сколько прогонов подряд кабинет hh не открывается через прокси, прежде чем
+# прогон считается упавшим (код 1, тревога OnFailure). Таймер каждые 5 минут,
+# так что 3 — это четверть часа без связи.
+NET_FAIL_ALERT_AFTER = int(os.environ.get("HH_NET_FAIL_ALERT_AFTER", "3"))
+NET_FAIL_FILE = Path(os.environ.get("HH_NET_FAIL_FILE", "data/hh_net_fail.txt"))
+
+
+def _net_fail_bump() -> int:
+    try:
+        n = int(NET_FAIL_FILE.read_text().strip() or 0)
+    except (OSError, ValueError):
+        n = 0
+    n += 1
+    try:
+        NET_FAIL_FILE.parent.mkdir(parents=True, exist_ok=True)
+        NET_FAIL_FILE.write_text(str(n))
+    except OSError as exc:
+        # Не записали счётчик — тревожим сразу: лучше лишняя тревога, чем
+        # прокси, лежащий сутки без единого сообщения.
+        log.warning("[hh_apply] счётчик сетевых сбоев не записан: %s", exc)
+        return NET_FAIL_ALERT_AFTER
+    return n
+
+
+def _net_fail_reset() -> None:
+    try:
+        NET_FAIL_FILE.unlink(missing_ok=True)
+    except OSError as exc:
+        log.warning("[hh_apply] счётчик сетевых сбоев не сброшен: %s", exc)
+
+
 @dataclass
 class RunReport:
     dry_run: bool
@@ -984,9 +1015,20 @@ class HHApplyAgent(BaseAgent):
             async with self._browser() as page:
                 if not await self._logged_in(page):
                     if getattr(self, "_session_unknown", False):
-                        report.error = (f"не удалось проверить сессию hh.ru "
-                                        f"(сеть или прокси): {self._session_detail}")
+                        streak = _net_fail_bump()
+                        msg = (f"не удалось проверить сессию hh.ru (сеть или "
+                               f"прокси, {streak}-й прогон подряд): "
+                               f"{self._session_detail}")
+                        # Одна-две заминки прокси подряд — не повод будить
+                        # человека: таймер каждые 5 минут, следующий прогон
+                        # чаще всего проходит. Тревога — когда прокси лежит
+                        # дольше NET_FAIL_ALERT_AFTER прогонов.
+                        if streak >= NET_FAIL_ALERT_AFTER:
+                            report.error = msg
+                        else:
+                            report.stopped_reason = msg
                         return report
+                    _net_fail_reset()
                     report.error = (
                         f"сессия hh.ru недействительна ({self.state_path}): "
                         f"{self._session_detail}. Инструкция, как перелогиниться, "
@@ -1192,6 +1234,7 @@ class HHApplyAgent(BaseAgent):
             self._session_detail = detail
             return False
         log.info("[hh_apply] сессия жива, hh отдал %s", detail)
+        _net_fail_reset()
         self._session_ok = True
         return True
 

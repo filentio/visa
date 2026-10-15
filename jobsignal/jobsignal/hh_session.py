@@ -361,12 +361,24 @@ async def check_page(page) -> tuple[bool | None, str]:
     та же страница с кнопкой «Войти». Проверка стала давать ложное «жива», и
     система двое суток считала мёртвую сессию рабочей.
     """
-    try:
-        await page.goto(LOGIN_PROBE_URL, wait_until="domcontentloaded")
-    except Exception as exc:  # noqa: BLE001
-        return None, (f"страница {LOGIN_PROBE_URL} не открылась (сеть или "
-                      f"прокси, о сессии это ничего не говорит): "
-                      f"{str(exc).splitlines()[0][:150]}")
+    # Резидентный прокси иногда отдаёт выход, который не отвечает минуту, а
+    # следующий запрос идёт уже бодро. Один повтор отличает такую заминку от
+    # лежащего прокси и не роняет прогон зря.
+    retries = int(os.environ.get("HH_GOTO_RETRIES", "1"))
+    for attempt in range(retries + 1):
+        try:
+            await page.goto(LOGIN_PROBE_URL, wait_until="domcontentloaded")
+            break
+        except Exception as exc:  # noqa: BLE001
+            if attempt < retries:
+                log.warning("[hh_session] %s не открылась, повтор: %s",
+                            LOGIN_PROBE_URL, str(exc).splitlines()[0][:150])
+                await page.wait_for_timeout(5000)
+                continue
+            return None, (f"страница {LOGIN_PROBE_URL} не открылась "
+                          f"{retries + 1} раза подряд (сеть или прокси, о "
+                          f"сессии это ничего не говорит): "
+                          f"{str(exc).splitlines()[0][:150]}")
     url = page.url
     if any(marker in url for marker in LOGIN_URL_MARKERS):
         return False, f"hh редиректит на логин ({url}) — сессия разлогинена"
