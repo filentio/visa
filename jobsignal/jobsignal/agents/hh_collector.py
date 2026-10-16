@@ -198,7 +198,10 @@ def _hh_get(url: str, **kw) -> requests.Response:
     r = requests.get(url, headers=HEADERS, timeout=40, proxies=proxies, **kw)
     # Content-Length у сжатого ответа — это размер по проводу. Если заголовка
     # нет, грубо оцениваем по распакованному.
-    _proxied_bytes += int(r.headers.get("Content-Length") or len(r.content) // 5)
+    n = int(r.headers.get("Content-Length") or len(r.content) // 5)
+    _proxied_bytes += n
+    from jobsignal import proxy_meter
+    proxy_meter.add("hh-search", n)
     return r
 
 # Поисковые запросы под три профиля
@@ -394,7 +397,7 @@ async def _resume_feed_async(pages: int) -> list[dict]:
                 storage_state=str(state_file) if state_file.exists() else None,
                 locale="ru-RU", viewport={"width": 1440, "height": 900})
             ctx.set_default_timeout(int(os.environ.get("HH_NAV_TIMEOUT_MS", "60000")))
-            await hh_session.block_heavy(ctx)
+            await hh_session.block_heavy(ctx, "hh-resume-feed")
             page_obj = await ctx.new_page()
 
             async def load(url: str) -> str:

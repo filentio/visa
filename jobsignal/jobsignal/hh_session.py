@@ -156,8 +156,15 @@ def playwright_proxy() -> dict | None:
 BLOCKED_RESOURCES = {"image", "media", "font"}
 
 
-async def block_heavy(ctx) -> None:
-    """Не грузить картинки, шрифты и видео. Экономит до трёх четвертей трафика."""
+async def block_heavy(ctx, source: str = "browser") -> None:
+    """Не грузить картинки, шрифты и видео. Экономит до трёх четвертей трафика.
+
+    Здесь же включается учёт трафика (proxy_meter): через эту функцию
+    проходит каждый браузерный контекст проекта, а source говорит, чей он.
+    """
+    from jobsignal import proxy_meter
+    proxy_meter.meter_context(ctx, source)
+
     async def _route(route):
         try:
             if route.request.resource_type in BLOCKED_RESOURCES:
@@ -417,7 +424,7 @@ async def _probe_async(path: Path, headless: bool) -> tuple[bool | None, str]:
                 viewport={"width": 1440, "height": 900},
             )
             ctx.set_default_timeout(int(os.environ.get("HH_NAV_TIMEOUT_MS", "30000")))
-            await block_heavy(ctx)
+            await block_heavy(ctx, "hh-session-probe")
             page = await ctx.new_page()
             alive, detail = await check_page(page)
             # Куки продлеваются на каждом визите — сохраняем, но ТОЛЬКО если

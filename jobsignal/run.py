@@ -21,6 +21,7 @@ COMMANDS = (
     "hh-replies",             # NEW: учёт ответов на отклики hh.ru
     "tg-watch",               # NEW: сторож входящих в телеграме
     "tg-outreach",            # NEW: отклик в телеграм полуавтоматом
+    "proxy-traffic",          # NEW: расход трафика прокси; --topup после пополнения
     "channels",               # NEW: list channels
     "pipeline", "status", "dashboard", "serve",
 )
@@ -413,6 +414,17 @@ def main():
         print(f"Очередь: {rep['queue']} | предложено: {rep['offered']}"
               + (f" | не вышло: {rep['failed']}" if rep.get("failed") else "")
               + (f" | осталось в очереди: {left}" if left > 0 else ""))
+
+    elif cmd == "proxy-traffic":
+        from jobsignal import proxy_meter
+        if arg == "--topup":
+            gb = sys.argv[3] if len(sys.argv) > 3 else None
+            proxy_meter.topup(float(gb.replace(",", ".")) if gb else None)
+            print("Счётчик пакета обнулён, предупреждения снова включены.")
+            if gb and not os.environ.get("PROXY_PACKAGE_GB"):
+                print(f"Чтобы получать предупреждения, впиши в config/.env: "
+                      f"PROXY_PACKAGE_GB={gb}")
+        print(proxy_meter.report())
 
     elif cmd == "status":
         from jobsignal.db import get_session_factory, Channel, RawPost, Vacancy, Application, Application as Reply

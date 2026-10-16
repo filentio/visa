@@ -381,6 +381,27 @@ def _net_fail_bump() -> int:
     return n
 
 
+# Сколько минут после удачной проверки сессии не проверять её заново.
+SESSION_RECHECK_MIN = int(os.environ.get("HH_SESSION_RECHECK_MIN", "30"))
+
+
+def _alive_recently() -> int | None:
+    """Минуты с последней удачной проверки, если она свежая и последняя.
+
+    None — проверять надо: давно не проверяли, последнее наблюдение было
+    «не пустили», или связь недавно рвалась (счётчик сетевых сбоев не пуст).
+    """
+    if SESSION_RECHECK_MIN <= 0 or NET_FAIL_FILE.exists():
+        return None
+    journal = hh_session.read_journal()
+    alive = hh_session._parse(journal.get("last_alive_at"))
+    probe = hh_session._parse(journal.get("last_probe_at"))
+    if alive is None or (probe is not None and probe > alive):
+        return None
+    age = (datetime.now(timezone.utc) - alive).total_seconds() / 60
+    return int(age) if 0 <= age < SESSION_RECHECK_MIN else None
+
+
 def _net_fail_reset() -> None:
     try:
         NET_FAIL_FILE.unlink(missing_ok=True)
@@ -520,6 +541,9 @@ class HHApplyAgent(BaseAgent):
         self._Session = get_session_factory()
         # Ставится после успешной проверки логина; без него state.json не пишем.
         self._session_ok = False
+        # Сессию не проверяли отдельно: была жива меньше SESSION_RECHECK_MIN
+        # минут назад. Тогда проверкой служит первая вакансия.
+        self._session_assumed = False
         # Чем именно не понравилась сессия — попадает в отчёт и в телеграм.
         self._session_detail = ""
         # Прочитана ли за прогон хотя бы одна страница вакансии. Отличает
@@ -1015,18 +1039,7 @@ class HHApplyAgent(BaseAgent):
             async with self._browser() as page:
                 if not await self._logged_in(page):
                     if getattr(self, "_session_unknown", False):
-                        streak = _net_fail_bump()
-                        msg = (f"не удалось проверить сессию hh.ru (сеть или "
-                               f"прокси, {streak}-й прогон подряд): "
-                               f"{self._session_detail}")
-                        # Одна-две заминки прокси подряд — не повод будить
-                        # человека: таймер каждые 5 минут, следующий прогон
-                        # чаще всего проходит. Тревога — когда прокси лежит
-                        # дольше NET_FAIL_ALERT_AFTER прогонов.
-                        if streak >= NET_FAIL_ALERT_AFTER:
-                            report.error = msg
-                        else:
-                            report.stopped_reason = msg
+                        self._net_unknown(report, self._session_detail)
                         return report
                     _net_fail_reset()
                     report.error = (
@@ -1061,6 +1074,27 @@ class HHApplyAgent(BaseAgent):
                     attempt = await self._process(
                         page, item, lambda: self._letter(session, item)
                     )
+
+                    # Сессию в этот прогон не проверяли (была жива недавно),
+                    # и первая вакансия — фактически и есть проверка. Если она
+                    # не открылась или hh выкинул на логин, это свойство
+                    # связи или сессии, а не вакансии: в базу не пишем, иначе
+                    # вакансия копила бы неудачи и выпала бы из очереди.
+                    if self._session_assumed and not report.attempts:
+                        if attempt.detail.startswith("страница не открылась"):
+                            self._net_unknown(report, attempt.detail)
+                            break
+                        if (attempt.detail == "hh выкинул на логин"
+                                or (attempt.result is Result.FORBIDDEN
+                                    and "форма логина" in attempt.detail)):
+                            hh_session.record_probe(False)
+                            self._session_ok = False
+                            report.stopped_reason = (
+                                "hh выкинул на логин на первой вакансии — "
+                                "следующий прогон проверит сессию полностью")
+                            log.error("[hh_apply] %s", report.stopped_reason)
+                            break
+                        _net_fail_reset()
 
                     report.attempts.append(attempt)
                     self._record(session, attempt)
@@ -1182,7 +1216,7 @@ class HHApplyAgent(BaseAgent):
                     viewport={"width": 1440, "height": 900},
                 )
                 self._ctx.set_default_timeout(agent.nav_timeout_ms)
-                await hh_session.block_heavy(self._ctx)
+                await hh_session.block_heavy(self._ctx, "hh-apply")
                 return await self._ctx.new_page()
 
             async def __aexit__(self, *exc):
@@ -1205,6 +1239,24 @@ class HHApplyAgent(BaseAgent):
 
         return _Ctx()
 
+    def _net_unknown(self, report: "RunReport", detail: str) -> None:
+        """Кабинет hh не открылся по сети: остановить прогон и решить, будить ли.
+
+        Одна-две заминки прокси подряд — не повод будить человека: таймер
+        каждые 5 минут, следующий прогон чаще всего проходит. Тревога (код 1,
+        OnFailure) — когда связи нет NET_FAIL_ALERT_AFTER прогонов подряд.
+        """
+        streak = _net_fail_bump()
+        msg = (f"не удалось проверить сессию hh.ru (сеть или прокси, "
+               f"{streak}-й прогон подряд): {detail}")
+        if streak >= NET_FAIL_ALERT_AFTER:
+            report.error = (msg + " — если прокси не отвечает, а не "
+                            "отказывает, первым делом проверь остаток трафика "
+                            "у провайдера")
+        else:
+            report.stopped_reason = msg
+        log.error("[hh_apply] %s", msg)
+
     async def _logged_in(self, page) -> bool:
         """ЗАЩИТА ОТ ДЕФЕКТА №2.
 
@@ -1220,6 +1272,19 @@ class HHApplyAgent(BaseAgent):
         считался бы наблюдением, и в телеграм ушло бы «последний раз
         пускали» полусуточной давности.
         """
+        # Проверка — отдельная загрузка кабинета через платный прокси, а
+        # таймер срабатывает каждые 5 минут. Если сессия была жива недавно и
+        # с тех пор ничего не говорило об обратном, не проверяем: первая
+        # вакансия сама покажет разлогин или обрыв связи (см. run()).
+        fresh = _alive_recently()
+        if fresh is not None:
+            log.info("[hh_apply] сессия была жива %d мин назад — отдельно не "
+                     "проверяем (HH_SESSION_RECHECK_MIN=%d)",
+                     fresh, SESSION_RECHECK_MIN)
+            self._session_assumed = True
+            self._session_ok = True
+            return True
+
         alive, detail = await hh_session.check_page(page)
         hh_session.record_probe(alive)
         if alive is None:
