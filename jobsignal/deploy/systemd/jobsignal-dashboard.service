@@ -1,5 +1,5 @@
 [Unit]
-Description=jobsignal: дашборд (порт 5000, наружу закрыт ufw)
+Description=jobsignal: кабинет (127.0.0.1:5000; снаружи только через Caddy по HTTPS)
 After=network-online.target
 Wants=network-online.target
 

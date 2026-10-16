@@ -199,6 +199,31 @@ def topup(package_gb: float | None = None) -> dict:
         return dict(data)
 
 
+def summary() -> dict:
+    """То же, что report(), но данными — для кабинета."""
+    flush()
+    with _locked() as data:
+        snap = json.loads(json.dumps(data))
+    today = snap["days"].get(date.today().isoformat(), {})
+    pkg = package_bytes()
+    used = snap["since_topup"]
+    left = (pkg - used) if pkg else None
+    return {
+        "today_mb": round(sum(today.values()) / 2**20, 1),
+        "today_by_source": {k: round(v / 2**20, 1) for k, v in
+                            sorted(today.items(), key=lambda kv: -kv[1])},
+        "avg_day_mb": round(_avg_per_day(snap) / 2**20, 1),
+        "since_topup_mb": round(used / 2**20, 1),
+        "topup_at": snap.get("topup_at"),
+        "package_gb": pkg / 2**30 if pkg else None,
+        "left_mb": round(max(left, 0) / 2**20) if left is not None else None,
+        "left_pct": round(100 * max(left, 0) / pkg) if pkg else None,
+        "days_left": _days_left(snap, left) if left is not None else "",
+        "days": {d: round(sum(v.values()) / 2**20, 1)
+                 for d, v in sorted(snap["days"].items())[-7:]},
+    }
+
+
 def report() -> str:
     """Сводка для человека: по дням и источникам, остаток, прогноз."""
     flush()

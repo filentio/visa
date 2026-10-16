@@ -39,25 +39,88 @@ def _session():
 
 # ── auth ──────────────────────────────────────────────────────────────────────
 
+# Кабинет открыт в интернет через Caddy (deploy/expose_dashboard.sh), поэтому
+# вход строже, чем во времена SSH-туннеля:
+#   * без DASHBOARD_PASS пускаем только прямые запросы с самого сервера;
+#     пришедшее через Caddy (есть X-Forwarded-For) без пароля не пускаем;
+#   * пароль сравниваем за постоянное время;
+#   * после AUTH_MAX_FAILS неверных паролей с одного адреса за AUTH_WINDOW_S
+#     секунд адрес получает 429 до конца окна — перебор становится бесполезным.
+AUTH_MAX_FAILS = int(os.environ.get("DASHBOARD_MAX_FAILS", "10"))
+AUTH_WINDOW_S = int(os.environ.get("DASHBOARD_FAIL_WINDOW_S", "900"))
+_auth_fails: dict[str, list[float]] = {}
+
+
+def _client_ip() -> str:
+    """Адрес клиента. X-Forwarded-For верим, только если запрос пришёл от
+    Caddy с этого же сервера: иначе заголовок подделает кто угодно."""
+    remote = request.remote_addr or ""
+    fwd = request.headers.get("X-Forwarded-For", "")
+    if remote in ("127.0.0.1", "::1") and fwd:
+        return fwd.split(",")[0].strip()
+    return remote
+
+
+def _is_local_direct() -> bool:
+    return (request.remote_addr in ("127.0.0.1", "::1")
+            and not request.headers.get("X-Forwarded-For"))
+
+
 def _check_auth(username: str, password: str) -> bool:
+    import hmac
     u = os.environ.get("DASHBOARD_USER", "admin")
     p = os.environ.get("DASHBOARD_PASS", "")
     if not p:
-        return True
-    return username == u and password == p
+        return _is_local_direct()
+    return (hmac.compare_digest(username.encode(), u.encode())
+            and hmac.compare_digest(password.encode(), p.encode()))
+
+
+def _locked_out(ip: str) -> bool:
+    import time
+    now = time.time()
+    fails = [t for t in _auth_fails.get(ip, []) if now - t < AUTH_WINDOW_S]
+    _auth_fails[ip] = fails
+    return len(fails) >= AUTH_MAX_FAILS
+
+
+def _note_fail(ip: str) -> None:
+    import time
+    _auth_fails.setdefault(ip, []).append(time.time())
+    if len(_auth_fails[ip]) == AUTH_MAX_FAILS:
+        log.warning("[dashboard] %d неверных входов с %s — адрес закрыт на %d мин",
+                    AUTH_MAX_FAILS, ip, AUTH_WINDOW_S // 60)
 
 
 def _requires_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        ip = _client_ip()
+        if _locked_out(ip):
+            return Response("Слишком много неверных паролей, попробуй позже",
+                            429, {"Retry-After": str(AUTH_WINDOW_S)})
+        if not os.environ.get("DASHBOARD_PASS") and not _is_local_direct():
+            return Response("Кабинет закрыт: на сервере не задан DASHBOARD_PASS",
+                            503)
         auth = request.authorization
-        if not auth or not _check_auth(auth.username, auth.password):
+        if not auth or not _check_auth(auth.username or "", auth.password or ""):
+            if auth:
+                _note_fail(ip)
             return Response(
                 "Нужна авторизация", 401,
-                {"WWW-Authenticate": 'Basic realm="JobSignal"'}
+                {"WWW-Authenticate": 'Basic realm="JobSignal", charset="UTF-8"'}
             )
         return f(*args, **kwargs)
     return decorated
+
+
+@app.after_request
+def _security_headers(resp):
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    resp.headers.setdefault("X-Robots-Tag", "noindex, nofollow")
+    return resp
 
 
 app.before_request(lambda: None)  # placeholder; auth applied per-route
@@ -878,6 +941,21 @@ def api_recruiters_for_company():
     result = RecruiterBuilder().find_for_company(company)
     return jsonify({"recruiters": result})
 
+
+
+# ── состояние системы ─────────────────────────────────────────────────────────
+
+@app.route("/status")
+@_requires_auth
+def status_page():
+    return render_template("status.html")
+
+
+@app.route("/api/status")
+@_requires_auth
+def api_status():
+    from jobsignal.dashboard.status import collect
+    return jsonify(collect())
 
 
 # ── analytics ─────────────────────────────────────────────────────────────────

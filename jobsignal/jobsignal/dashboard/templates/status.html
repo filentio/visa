@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Состояние — JobSignal</title>
+<style>
+:root{
+  --bg:#131722;--bg2:#1a2235;--bg3:#1e2d45;
+  --accent:#4F46E5;--accent2:#6366f1;
+  --green:#22c55e;--red:#ef4444;--amber:#f59e0b;--gray:#64748b;
+  --text:#e2e8f0;--text2:#94a3b8;--border:#2a3a55;
+  --radius:10px;--font:'Inter',system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;min-height:100vh;}
+a{color:var(--accent2);text-decoration:none;}
+nav{background:var(--bg2);border-bottom:1px solid var(--border);
+  padding:12px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;row-gap:8px;}
+nav .logo{font-weight:700;font-size:15px;}
+nav a{color:var(--text2);font-size:13px;}
+nav a.active{color:var(--accent2);}
+.wrap{max-width:1100px;margin:0 auto;padding:20px 16px 40px;}
+.verdict{border-radius:var(--radius);padding:14px 16px;margin-bottom:16px;border:1px solid var(--border);background:var(--bg2);}
+.verdict b{font-size:16px;}
+.verdict.ok{border-color:var(--green);}
+.verdict.bad{border-color:var(--red);}
+.verdict ul{margin:8px 0 0 18px;color:var(--text2);}
+.updated{color:var(--text2);font-size:12px;margin-top:6px;}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-bottom:16px;}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px;min-width:0;}
+.card h3{font-size:12px;font-weight:600;color:var(--text2);text-transform:uppercase;letter-spacing:.04em;margin-bottom:10px;}
+.big{font-size:26px;font-weight:700;line-height:1.1;}
+.sub{color:var(--text2);font-size:12.5px;margin-top:6px;line-height:1.45;}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;vertical-align:1px;}
+.g{background:var(--green);} .r{background:var(--red);} .a{background:var(--amber);} .n{background:var(--gray);}
+.bar{height:8px;background:var(--bg3);border-radius:4px;overflow:hidden;margin-top:10px;}
+.bar i{display:block;height:100%;background:var(--accent2);}
+h2{font-size:15px;font-weight:600;margin:20px 0 10px;}
+table{width:100%;border-collapse:collapse;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;}
+td,th{padding:9px 12px;border-bottom:1px solid var(--border);text-align:left;vertical-align:top;font-size:13px;}
+th{color:var(--text2);font-weight:500;font-size:12px;}
+tr:last-child td{border-bottom:none;}
+.muted{color:var(--text2);}
+.tag{display:inline-block;padding:1px 7px;border-radius:9px;font-size:11.5px;background:var(--bg3);color:var(--text2);white-space:nowrap;}
+.tag.inv{background:rgba(34,197,94,.15);color:var(--green);}
+.tag.dis{background:rgba(239,68,68,.12);color:#f87171;}
+.err{color:#f87171;font-size:12.5px;}
+@media(max-width:640px){
+  .hide-m{display:none;}
+  td,th{padding:8px;}
+}
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo">⚡ JobSignal</span>
+  <a href="/status" class="active">Состояние</a>
+  <a href="/">Вакансии</a>
+  <a href="/analytics">Аналитика</a>
+  <a href="/channels">Каналы</a>
+  <a href="/resumes">Резюме</a>
+  <a href="/recruiters">Рекрутёры</a>
+</nav>
+
+<div class="wrap">
+  <div id="verdict" class="verdict"><b>Загружаю…</b></div>
+  <div class="grid">
+    <div class="card" id="c-session"><h3>Сессия hh</h3><div class="muted">…</div></div>
+    <div class="card" id="c-proxy"><h3>Трафик прокси</h3><div class="muted">…</div></div>
+    <div class="card" id="c-sent"><h3>Отклики</h3><div class="muted">…</div></div>
+    <div class="card" id="c-queue"><h3>Очереди</h3><div class="muted">…</div></div>
+  </div>
+
+  <h2>Службы и таймеры</h2>
+  <div id="units"></div>
+
+  <h2>Последние отклики</h2>
+  <div id="recent"></div>
+</div>
+
+<script>
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const STATE = {DISCARD:['отказ','dis'], INVITATION:['приглашение','inv'], INTERVIEW:['собеседование','inv'],
+               HIRED:['оффер','inv'], REPLIED:['ответ',''], NO_REPLY:['без ответа','']};
+
+function ago(iso){
+  if(!iso) return '—';
+  const s = (Date.now() - Date.parse(iso)) / 1000;
+  if (s < 90) return 'только что';
+  if (s < 3600) return Math.round(s/60) + ' мин назад';
+  if (s < 86400) return Math.round(s/3600) + ' ч назад';
+  return Math.round(s/86400) + ' дн. назад';
+}
+function when(iso){
+  if(!iso) return '—';
+  // В базе время без пояса — это UTC.
+  const d = new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(iso) ? iso : iso.replace(' ', 'T') + 'Z');
+  return d.toLocaleString('ru-RU', {day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'});
+}
+// systemd отдаёт «Fri 2026-10-16 19:07:00 UTC» — оставляем дату и время.
+const sysd = s => { const m = /(\d{4}-\d\d-\d\d) (\d\d:\d\d)(:\d\d)? (\w+)/.exec(s||''); return m ? when(m[1]+'T'+m[2]+':00Z') : '—'; };
+const fmtMap = o => Object.entries(o||{}).map(([k,v]) => `${esc(k)}: ${v}`).join(', ') || '—';
+const blockErr = b => b && b.error ? `<div class="err">${esc(b.error)}</div>` : '';
+
+function render(d){
+  const problems = [];
+  const s = d.hh_session || {};
+  const p = d.proxy || {};
+  const q = d.queue || {};
+  const f = d.funnel || {};
+
+  // Сессия
+  let html = '<h3>Сессия hh</h3>' + blockErr(s);
+  if (!s.error){
+    const lv = {ok:['g','рабочая'], warn:['a','скоро истечёт'], dead:['r','не работает']}[s.level] || ['n', s.level];
+    html += `<div class="big"><span class="dot ${lv[0]}"></span>${lv[1]}</div>
+      <div class="sub">Пускали: ${ago(s.last_alive_at)}<br>Cookie до: ${when(s.expires_at)}</div>`;
+    if (s.level === 'dead') problems.push('Сессия hh не работает: ' + esc(s.reason));
+    if (s.level === 'warn') problems.push('Сессия hh скоро истечёт: ' + esc(s.reason));
+    if (s.last_alive_at && Date.now() - Date.parse(s.last_alive_at) > 6*3600e3)
+      problems.push('hh не пускал больше 6 часов: проверь прокси и сессию');
+  }
+  document.getElementById('c-session').innerHTML = html;
+
+  // Прокси
+  html = '<h3>Трафик прокси</h3>' + blockErr(p);
+  if (p.disabled) html += '<div class="muted">Прокси не задан</div>';
+  else if (!p.error){
+    if (p.package_gb){
+      html += `<div class="big">${p.left_mb} МБ</div>
+        <div class="bar"><i style="width:${Math.max(0, Math.min(100, p.left_pct))}%"></i></div>
+        <div class="sub">осталось ${p.left_pct}% из ${p.package_gb} ГБ${p.days_left ? ', хватит на ' + esc(p.days_left) : ''}<br>`;
+      if (p.left_pct < 20) problems.push(`Трафика прокси осталось ${p.left_pct}% — пора пополнить`);
+    } else {
+      html += `<div class="big">${p.since_topup_mb} МБ</div><div class="sub">с пополнения (объём пакета не задан)<br>`;
+    }
+    html += `сегодня ${p.today_mb} МБ${p.avg_day_mb ? ', в среднем ' + p.avg_day_mb + ' МБ/сут' : ''}<br>
+      <span class="muted">${fmtMap(p.today_by_source)}</span></div>`;
+  }
+  document.getElementById('c-proxy').innerHTML = html;
+
+  // Отклики
+  html = '<h3>Отклики</h3>' + blockErr(f);
+  if (!f.error){
+    const day = f.day || {}, wk = f.week || {}, all = f.all_hh || {};
+    const st = all.states || {};
+    const inv = (st.INVITATION||0) + (st.INTERVIEW||0) + (st.HIRED||0);
+    html += `<div class="big">${day.sent_total} <span class="muted" style="font-size:14px;font-weight:400">за сутки</span></div>
+      <div class="sub">за неделю ${wk.sent_total}: ${fmtMap(wk.sent)}<br>
+      ответы за неделю: ${Object.entries(wk.replies||{}).map(([k,v]) => (STATE[k]||[k])[0] + ': ' + v).join(', ') || '—'}<br>
+      всего на hh ${all.sent}, приглашений ${inv}, отказов ${st.DISCARD||0}</div>`;
+  }
+  document.getElementById('c-sent').innerHTML = html;
+
+  // Очереди
+  html = '<h3>Очереди</h3>' + blockErr(q);
+  if (!q.error){
+    html += `<div class="big">${q.hh_queue} <span class="muted" style="font-size:14px;font-weight:400">к автоотклику</span></div>
+      <div class="sub">балл от ${q.threshold}<br>
+      лимит: за час ${q.sent_hour}/${q.per_hour}, за сутки ${q.sent_day}/${q.per_day}<br>
+      ждут разбора: ${q.parse_queue} постов<br>
+      новых вакансий за сутки: ${(f.day||{}).new_vacancies ?? '—'}</div>`;
+    if (q.parse_queue > 500) problems.push(`Очередь разбора ${q.parse_queue} постов — разбор не успевает`);
+  }
+  document.getElementById('c-queue').innerHTML = html;
+
+  // Службы
+  const units = d.units;
+  if (units && units.error) document.getElementById('units').innerHTML = blockErr(units);
+  else {
+    let rows = units.map(u => {
+      if (!u.ok) problems.push(`Служба «${esc(u.title)}» упала или выключена`);
+      const state = u.ok ? '<span class="dot g"></span>в порядке'
+        : `<span class="dot r"></span>${esc(u.next_run === undefined ? 'не запущен (' + (u.active || '?') + ')'
+              : u.active === 'failed' || u.result !== 'success' ? 'сбой: ' + (u.result || '?')
+              : 'таймер выключен')}`;
+      return `<tr><td>${esc(u.title)}<div class="muted hide-m" style="font-size:11.5px">${esc(u.unit)}</div></td>
+        <td>${state}</td>
+        <td class="hide-m">${sysd(u.last_run)}</td>
+        <td>${u.next_run !== undefined ? sysd(u.next_run) : '<span class="muted">всегда</span>'}</td></tr>`;
+    }).join('');
+    document.getElementById('units').innerHTML =
+      `<table><tr><th>Что</th><th>Состояние</th><th class="hide-m">Последний запуск</th><th>Следующий</th></tr>${rows}</table>`;
+  }
+
+  // Последние отклики
+  const rec = d.recent;
+  if (rec && rec.error) document.getElementById('recent').innerHTML = blockErr(rec);
+  else if (!rec.length) document.getElementById('recent').innerHTML = '<div class="muted">Пока нет</div>';
+  else {
+    const rows = rec.map(r => {
+      const stt = STATE[r.reply_state] || (r.replied_at ? STATE.REPLIED : ['ждём', '']);
+      // Ссылка пришла из чужого поста: только http(s), иначе «javascript:» исполнится по клику.
+      const role = /^https?:\/\//i.test(r.link || '') ? `<a href="${esc(r.link)}" target="_blank" rel="noopener noreferrer">${esc(r.role)}</a>` : esc(r.role);
+      return `<tr><td class="muted">${when(r.sent_at)}</td>
+        <td>${role}<div class="muted" style="font-size:12px">${esc(r.company)}${r.score ? ' · ' + r.score + '%' : ''}</div></td>
+        <td class="hide-m"><span class="tag">${esc(r.channel)}</span></td>
+        <td><span class="tag ${stt[1]}">${stt[0]}</span></td></tr>`;
+    }).join('');
+    document.getElementById('recent').innerHTML =
+      `<table><tr><th>Когда</th><th>Вакансия</th><th class="hide-m">Канал</th><th>Ответ</th></tr>${rows}</table>`;
+  }
+
+  const v = document.getElementById('verdict');
+  v.className = 'verdict ' + (problems.length ? 'bad' : 'ok');
+  v.innerHTML = (problems.length
+      ? `<b>Есть проблемы: ${problems.length}</b><ul>${problems.map(x => `<li>${x}</li>`).join('')}</ul>`
+      : '<b><span class="dot g"></span>Всё работает</b>')
+    + `<div class="updated">Обновлено ${new Date(d.generated_at).toLocaleTimeString('ru-RU')}, страница обновляется сама раз в минуту</div>`;
+}
+
+async function load(){
+  try {
+    const r = await fetch('/api/status', {cache: 'no-store'});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    render(await r.json());
+  } catch (e) {
+    const v = document.getElementById('verdict');
+    v.className = 'verdict bad';
+    v.innerHTML = `<b>Не удалось получить состояние</b><div class="updated">${esc(e.message)}</div>`;
+  }
+}
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>

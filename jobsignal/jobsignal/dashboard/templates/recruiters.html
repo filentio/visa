@@ -82,11 +82,13 @@ tr:hover td{background:var(--bg2);}
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border);
   border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;}
 @keyframes spin{to{transform:rotate(360deg);}}
+nav{flex-wrap:wrap;row-gap:8px;}
 </style>
 </head>
 <body>
 <nav>
   <span class="logo">⚡ JobSignal</span>
+  <a href="/status">Состояние</a>
   <a href="/">Вакансии</a>
   <a href="/channels">Каналы</a>
   <a href="/resumes">Резюме</a>
