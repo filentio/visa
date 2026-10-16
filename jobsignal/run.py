@@ -22,6 +22,7 @@ COMMANDS = (
     "tg-watch",               # NEW: сторож входящих в телеграме
     "tg-outreach",            # NEW: отклик в телеграм полуавтоматом
     "proxy-traffic",          # NEW: расход трафика прокси; --topup после пополнения
+    "tg-scout",               # NEW: поиск новых каналов с вакансиями и надзор за старыми
     "channels",               # NEW: list channels
     "pipeline", "status", "dashboard", "serve",
 )
@@ -414,6 +415,26 @@ def main():
         print(f"Очередь: {rep['queue']} | предложено: {rep['offered']}"
               + (f" | не вышло: {rep['failed']}" if rep.get("failed") else "")
               + (f" | осталось в очереди: {left}" if left > 0 else ""))
+
+    elif cmd == "tg-scout":
+        # Раз в неделю по таймеру. --dry-run: показать, что нашлось и какое
+        # решение было бы принято, ничего не записывая и не отключая.
+        from jobsignal.agents.channel_scout import ChannelScoutAgent
+        rep = ChannelScoutAgent(dry_run="--dry-run" in sys.argv).run()
+        aud = rep["audit"]
+        print(f"Кандидатов: {rep['candidates']} | проверено: {rep['evaluated']} | "
+              f"добавлено: {len(rep['added'])} | ждут решения: {len(rep['pending'])} | "
+              f"отказ: {rep['rejected']} | не проверены (сбой): {rep['errors']}")
+        if rep["added"]:
+            print("  добавлены: " + ", ".join("@" + h for h in rep["added"]))
+        if rep["pending"]:
+            print("  ждут решения: " + ", ".join("@" + h for h in rep["pending"]))
+        if aud["disabled"]:
+            print("  отключены: " + ", ".join("@" + h for h, _, _ in aud["disabled"]))
+        if rep["telegram_problem"]:
+            print("  ВНИМАНИЕ: " + rep["telegram_problem"])
+        if rep["dry_run"]:
+            print("Это предпросмотр (--dry-run): ничего не записано.")
 
     elif cmd == "proxy-traffic":
         from jobsignal import proxy_meter

@@ -1,0 +1,12 @@
+[Unit]
+Description=jobsignal: разведка каналов раз в неделю
+
+[Timer]
+# Понедельник 07:23 UTC (10:23 МСК): вне часового прогона в :07 и до
+# рабочего дня, чтобы отчёт в боте был с утра.
+OnCalendar=Mon *-*-* 07:23:00
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

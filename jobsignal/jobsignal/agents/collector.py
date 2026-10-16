@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 import requests
 from bs4 import BeautifulSoup
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from ..db import Channel, RawPost, get_session_factory, utcnow
 from .base import BaseAgent
@@ -108,7 +108,12 @@ class CollectorAgent(BaseAgent):
         scanned = 0
         with Session() as s:
             channels = (
-                s.execute(select(Channel).where(Channel.active.is_(True)))
+                # hh_ru — виртуальный канал hh.ru (hh_collector), а не лента
+                # Telegram: на t.me/s/hh_ru живёт чужой канал, и его посты
+                # смешались бы с вакансиями hh под одним channel_id.
+                s.execute(select(Channel).where(
+                    Channel.active.is_(True),
+                    or_(Channel.source.is_(None), Channel.source != "hh")))
                 .scalars()
                 .all()
             )

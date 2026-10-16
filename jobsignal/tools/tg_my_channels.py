@@ -160,7 +160,12 @@ def _only() -> set[str]:
 def main() -> int:
     add = "--add" in sys.argv
     only = _only()
-    items = asyncio.run(collect())
+    from jobsignal.tg_lock import tg_session_lock
+    with tg_session_lock(wait_s=300) as got:
+        if not got:
+            print("сессия Telegram занята другим процессом — попробуй через пару минут")
+            return 1
+        items = asyncio.run(collect())
     if not items:
         print("новых каналов среди подписок не найдено")
         return 0

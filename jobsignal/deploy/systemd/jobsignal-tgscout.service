@@ -1,0 +1,11 @@
+[Unit]
+Description=jobsignal: поиск новых телеграм-каналов с вакансиями и надзор за старыми
+After=network-online.target
+Wants=network-online.target
+OnFailure=jobsignal-alert@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/jobsignal_local
+ExecStart=/opt/jobsignal_local/.venv/bin/python run.py tg-scout
+TimeoutStartSec=1h

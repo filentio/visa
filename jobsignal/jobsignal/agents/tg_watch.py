@@ -253,4 +253,13 @@ class TGWatchAgent:
     name = "tg_watch"
 
     def run(self) -> dict:
-        return asyncio.run(_run_async())
+        from jobsignal.tg_lock import tg_session_lock
+        with tg_session_lock(wait_s=20) as got:
+            if not got:
+                # Сессией занят поиск каналов или сверка исходящих. Это не
+                # сбой: следующий прогон через 5 минут.
+                log.info("[tg_watch] сессия Telegram занята другим процессом — "
+                         "прогон пропущен")
+                return {"agent": "tg_watch", "watched": 0, "notified": 0,
+                        "drafted": 0, "skipped": True}
+            return asyncio.run(_run_async())

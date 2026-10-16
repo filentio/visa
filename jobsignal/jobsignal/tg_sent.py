@@ -79,11 +79,20 @@ async def _collect(with_dates: bool) -> dict[str, object]:
     return found
 
 
+def _locked_collect(with_dates: bool) -> dict[str, object]:
+    from jobsignal.tg_lock import tg_session_lock
+    with tg_session_lock(wait_s=300) as got:
+        if not got:
+            raise TGSentUnavailable("сессия Telegram занята другим процессом "
+                                    "дольше 5 минут")
+        return asyncio.run(_collect(with_dates))
+
+
 def sent_handles() -> set[str]:
     """Хэндлы, которым мы когда-либо писали. Бросает TGSentUnavailable."""
-    return set(asyncio.run(_collect(False)))
+    return set(_locked_collect(False))
 
 
 def sent_handles_with_dates() -> dict[str, object]:
     """То же плюс дата первого исходящего — для простановки задним числом."""
-    return asyncio.run(_collect(True))
+    return _locked_collect(True)
