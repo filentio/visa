@@ -735,17 +735,37 @@ def api_pipeline_run():
     import subprocess
     import sys
 
+    import fcntl
+
+    # Тот же замок, что у часового прогона и автоотклика. Без него кнопка
+    # запускала разбор и оценку параллельно автоотклику, оценка держала
+    # запись в базе, и запись отклика падала на «database is locked» (16.10).
+    lock_path = os.environ.get("HH_LOCK_PATH", "/run/jobsignal-hh.lock")
+    try:
+        fh = open(lock_path, "w")
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.close()
+        return jsonify({"ok": False, "message": "Прогон уже идёт (часовой "
+                        "конвейер или автоотклик) — данные обновятся сами"})
+    except OSError as exc:
+        return jsonify({"ok": False, "message": f"Замок прогона недоступен: {exc}"})
+
     def _run():
         python = sys.executable
         base = str(Path(__file__).parent.parent.parent)
-        for cmd in ["collect", "parse", "dedup", "match"]:
-            try:
-                subprocess.run(
-                    [python, "run.py", cmd],
-                    cwd=base, timeout=600, capture_output=True
-                )
-            except Exception as exc:
-                log.error("pipeline step %s error: %s", cmd, exc)
+        try:
+            for cmd in ["collect", "parse", "dedup", "match"]:
+                try:
+                    subprocess.run(
+                        [python, "run.py", cmd],
+                        cwd=base, timeout=600, capture_output=True
+                    )
+                except Exception as exc:
+                    log.error("pipeline step %s error: %s", cmd, exc)
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+            fh.close()
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()

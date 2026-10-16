@@ -381,6 +381,9 @@ def _net_fail_bump() -> int:
     return n
 
 
+# Попыток записать итог по вакансии, если база занята другим процессом.
+RECORD_TRIES = int(os.environ.get("HH_RECORD_TRIES", "6"))
+
 # Сколько минут после удачной проверки сессии не проверять её заново.
 SESSION_RECHECK_MIN = int(os.environ.get("HH_SESSION_RECHECK_MIN", "30"))
 
@@ -739,6 +742,52 @@ class HHApplyAgent(BaseAgent):
         session.commit()
 
     def _record(self, session, attempt: Attempt) -> None:
+        """_record_once с повтором при «database is locked».
+
+        16.10 запись попытки упала на занятой базе: другой процесс держал
+        запись дольше 15 секунд busy_timeout, прогон оборвался. Для
+        already_applied это мелочь, а для ОТПРАВЛЕННОГО отклика — потеря:
+        отклик на hh есть, а в базе нет, квота не списана, и вакансия снова
+        встанет в очередь. Поэтому повторяем, а если база так и не
+        освободилась, отправленный отклик сохраняем в файл и громко падаем.
+        """
+        import time as _time
+        from sqlalchemy.exc import OperationalError
+
+        for i in range(RECORD_TRIES):
+            try:
+                self._record_once(session, attempt)
+                return
+            except OperationalError as exc:
+                session.rollback()
+                if "locked" not in str(exc) or i == RECORD_TRIES - 1:
+                    if attempt.result.sent:
+                        self._save_unrecorded(attempt, exc)
+                    raise
+                wait = 5 * (i + 1)
+                log.warning("[hh_apply] #%s: база занята, повтор записи через %d с "
+                            "(%d/%d)", attempt.vacancy_id, wait, i + 1, RECORD_TRIES)
+                _time.sleep(wait)
+
+    def _save_unrecorded(self, attempt: Attempt, exc: Exception) -> None:
+        path = Path(os.environ.get("HH_UNRECORDED_FILE", "data/hh_unrecorded.jsonl"))
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({**attempt.as_dict(),
+                                     "at": datetime.now(timezone.utc).isoformat(),
+                                     "error": str(exc)[:300]}, ensure_ascii=False) + "\n")
+        except OSError as e:
+            log.error("[hh_apply] не удалось сохранить и в файл: %s", e)
+        log.error("[hh_apply] ОТКЛИК #%s ОТПРАВЛЕН, НО НЕ ЗАПИСАН В БАЗУ — сохранён в %s",
+                  attempt.vacancy_id, path)
+        from .notify_bot import _esc
+        self._notify(f"⚠️ <b>Отклик отправлен, но не записан в базу</b> (база занята)\n"
+                     f"#{attempt.vacancy_id} {_esc(attempt.role)} — {_esc(attempt.company)}\n"
+                     f"Сохранён в {path}; вакансия может снова встать в очередь.",
+                     about=f"#{attempt.vacancy_id}")
+
+    def _record_once(self, session, attempt: Attempt) -> None:
         """Одна транзакция: журнал попытки + (при успехе) Application и статус.
 
         Неудача вакансию не теряет: статус остаётся matched/drafted, письмо уже
