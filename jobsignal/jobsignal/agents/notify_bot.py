@@ -32,11 +32,12 @@ log = logging.getLogger("jobsignal")
 DB_PATH = "data/jobsignal.db"
 RESUME_DIR = Path("config/resumes")
 
-PROFILE_KEY_MAP = {
-    "Senior AI PM": "ai_pm",
-    "CPO / Head of Product": "cpo",
-    "Senior PM/PO": "pm",
-}
+def _resume_key(profile_name: str) -> str:
+    """Ключ файла резюме по имени профиля (реестр jobsignal/profiles.py).
+    Снятый или неизвестный профиль — профиль по умолчанию."""
+    from jobsignal import profiles
+    p = profiles.resolve(profile_name)
+    return p.key if p else ""
 
 
 def _token() -> str:
@@ -100,13 +101,19 @@ def _esc(text: str) -> str:
 
 
 def _best_profile(conn: sqlite3.Connection, vid: int) -> tuple[str, int, str]:
+    """Лучший балл среди ДЕЙСТВУЮЩИХ профилей: оценки снятых профилей в базе
+    остаются, но решать по ним, каким резюме откликаться, нельзя."""
+    from jobsignal import profiles
+    active = profiles.names()
+    marks = ",".join("?" * len(active)) or "''"
     row = conn.execute(
-        "SELECT profile_key, score, reason FROM match_scores "
-        "WHERE vacancy_id=? ORDER BY score DESC LIMIT 1", (vid,)
+        f"SELECT profile_key, score, reason FROM match_scores "
+        f"WHERE vacancy_id=? AND profile_key IN ({marks}) "
+        f"ORDER BY score DESC LIMIT 1", (vid, *active)
     ).fetchone()
     if row:
         return row[0], row[1], row[2] or ""
-    return "Senior PM/PO", 0, ""
+    return profiles.default_name(), 0, ""
 
 
 def _get_active_template() -> dict | None:
@@ -161,7 +168,7 @@ def _cover_text(role: str, company: str, profile_key: str, recruiter_name: str =
     from jobsignal.config import get_config
     from jobsignal.llm import complete_text
 
-    resume_key = PROFILE_KEY_MAP.get(profile_key, "pm")
+    resume_key = _resume_key(profile_key)
     resume_text = get_resume_text(resume_key)
 
     if not resume_text:
@@ -194,21 +201,19 @@ def _cover_text(role: str, company: str, profile_key: str, recruiter_name: str =
     # дашборда: шаблон задаёт содержание, а голос у всех писем один.
     system_prompt = system_prompt + "\n\n" + HUMAN_VOICE
 
-    profile_labels = {
-        "Senior AI PM": "AI Product Owner",
-        "CPO / Head of Product": "CPO / Head of Product",
-        "Senior PM/PO": "Senior Product Manager",
-    }
+    from jobsignal import profiles as _profiles
+    _prof = _profiles.resolve(profile_key)
+    profile_label = _prof.letter_label if _prof else profile_key
     # Списка компаний в промпте нет умышленно: он был захардкожен и перебивал
     # резюме — обновление мест работы никуда не доходило, а закрытое место
     # продолжало выглядеть текущим. Места работы модель берёт из текста ниже.
     user = (
         f"Вакансия: {role}{company_part}\n"
         f"Имя рекрутёра: {recruiter_name or 'неизвестно'}\n"
-        f"Профиль кандидата: {profile_labels.get(profile_key, profile_key)}\n\n"
+        f"Профиль кандидата: {profile_label}\n\n"
         + (f"Текст вакансии:\n{vacancy_text.strip()[:2500]}\n\n"
            if vacancy_text and vacancy_text.strip() else "")
-        + f"Резюме кандидата:\n{resume_text[:3500]}\n\n"
+        + f"Резюме кандидата:\n{resume_text[:7500]}\n\n"
         f"Напиши сопроводительное письмо. "
         f"Начни с \'Добрый день{name_part}\'. "
         f"Факты о кандидате только из резюме. Из текста вакансии бери "
@@ -335,8 +340,7 @@ class NotifyBot:
             cover = _cover_text(role, company, profile_key, vacancy_id=vid)
             caption = f"👇 <i>Перешли это сообщение рекрутёру</i>\n\n{_esc(cover)}"
             from jobsignal.agents.resume_parser import pdf_path_for
-            resume_key = PROFILE_KEY_MAP.get(profile_key, "pm")
-            resume_path = pdf_path_for(resume_key)
+            resume_path = pdf_path_for(_resume_key(profile_key))
 
             if resume_path is not None:
                 _send_doc(str(resume_path), caption)

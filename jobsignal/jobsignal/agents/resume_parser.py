@@ -5,9 +5,8 @@ ResumeParser — парсит PDF резюме и сохраняет текст 
 Текст резюме используется при генерации сопроводительных писем
 вместо хардкода — исключает галлюцинации.
 
-Какой PDF брать для профиля, решает pdf_path_for(): отдельных резюме по
-профилям больше нет, все три указывают в profiles.yaml на общее
-config/master_cv.pdf.
+Какой PDF брать для профиля, решает pdf_path_for() по реестру профилей
+(jobsignal/profiles.py, config/profiles.yaml).
 """
 from __future__ import annotations
 
@@ -20,41 +19,20 @@ log = logging.getLogger("jobsignal")
 DB_PATH = "data/jobsignal.db"
 RESUME_DIR = Path("config/resumes")
 
-PROFILE_MAP = {
-    "ai_pm": "Senior AI PM",
-    "cpo": "CPO / Head of Product",
-    "pm": "Senior PM/PO",
-}
-
-
 def pdf_path_for(profile_key: str) -> Path | None:
-    """PDF профиля: свой файл в config/resumes/, иначе resume_path из profiles.yaml.
-
-    Позиционирование единое, поэтому все три профиля указывают на общее
-    config/master_cv.pdf — обновлять надо один файл. Личный PDF профиля, если
-    его загрузили через /resumes, остаётся главнее: иначе загрузка молча
-    уходила бы в никуда.
-    """
+    """PDF профиля — по реестру профилей (jobsignal/profiles.py): загруженный
+    в кабинете config/resumes/<key>.pdf, иначе resume_path из profiles.yaml."""
+    from jobsignal import profiles
+    p = profiles.by_key(profile_key)
+    if p is not None:
+        return p.resume_pdf()
     own = RESUME_DIR / f"{profile_key}.pdf"
-    if own.exists():
-        return own
+    return own if own.exists() else None
 
-    profiles_yaml = Path("config/profiles.yaml")
-    if not profiles_yaml.exists():
-        return None
-    import yaml
-    with profiles_yaml.open(encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    name = PROFILE_MAP.get(profile_key)
-    for p in data.get("profiles", []):
-        if p.get("name") != name:
-            continue
-        rp = p.get("resume_path")
-        if not rp:
-            return None
-        path = Path(rp)
-        return path if path.exists() else None
-    return None
+
+def extract_text(pdf_path: str) -> str:
+    """Текст PDF: pypdf, при неудаче pdfminer/pdfplumber."""
+    return _extract_pdf_text(pdf_path) or _extract_pdf_text_fallback(pdf_path)
 
 
 def _ensure_table():
@@ -125,7 +103,9 @@ def parse_and_save(profile_key: str) -> dict:
     if not text:
         return {"ok": False, "error": "could not extract text from PDF"}
 
-    profile_name = PROFILE_MAP.get(profile_key, profile_key)
+    from jobsignal import profiles
+    prof = profiles.by_key(profile_key)
+    profile_name = prof.name if prof else profile_key
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         INSERT INTO resumes (profile_key, profile_name, filename, raw_text, updated_at)
@@ -158,9 +138,9 @@ def parse_all() -> dict:
     """Parse all available resume PDFs."""
     _ensure_table()
     results = {}
-    for key in PROFILE_MAP:
-        pdf = RESUME_DIR / f"{key}.pdf"
-        if pdf.exists():
+    from jobsignal import profiles
+    for key in profiles.keys():
+        if pdf_path_for(key) is not None:
             results[key] = parse_and_save(key)
         else:
             results[key] = {"ok": False, "error": "no PDF"}

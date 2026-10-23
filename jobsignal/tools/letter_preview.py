@@ -79,7 +79,8 @@ def new(n: int) -> int:
               "генерировать не подо что")
         return 0
     for vid, role, co, text, prof, score in rows:
-        letter = _cover_text(role or "", co or "", prof or "Senior PM/PO",
+        from jobsignal import profiles
+        letter = _cover_text(role or "", co or "", prof or profiles.default_name(),
                              vacancy_text=text or "")
         _show(f"#{vid} · {score}% · {role or '—'} · {co or '—'} · профиль {prof}",
               letter)

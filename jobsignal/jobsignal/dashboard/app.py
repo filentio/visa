@@ -134,7 +134,14 @@ def _best_score(vacancy) -> tuple[int, str]:
     # score в схеме nullable: код всегда пишет int, но одна строка с NULL из
     # прошлого или из правки руками уронила бы сравнение в max() на TypeError,
     # то есть всю страницу дашборда. Дешевле считать пустой балл нулём.
-    best = max(vacancy.match_scores, key=lambda s: s.score or 0)
+    # Сначала действующие профили (config/profiles.yaml): оценки снятых
+    # профилей остаются в базе у непереоценённых вакансий, но решать по ним,
+    # каким резюме откликаться, нельзя. Нет действующих — показываем что есть.
+    from jobsignal import profiles as registry
+    active = set(registry.names())
+    pool = [s for s in vacancy.match_scores if s.profile_key in active] \
+        or list(vacancy.match_scores)
+    best = max(pool, key=lambda s: s.score or 0)
     return best.score, best.profile_key
 
 
@@ -201,8 +208,8 @@ def index():
     except Exception:
         profiles = {}
     if not profiles:
-        profiles = {n: n for n in ("Senior AI PM", "CPO / Head of Product",
-                                   "Senior PM/PO")}
+        from jobsignal import profiles as registry
+        profiles = {n: n for n in registry.names()}
     return render_template("index.html", styles=list(STYLES.keys()),
                            profiles=profiles, outreach_mode=_outreach_mode())
 
@@ -325,12 +332,10 @@ def api_generate_draft():
         return jsonify({"error": "not found"}), 404
     try:
         # determine best profile
-        best_profile = "Senior PM/PO"
-        best_score = 0
-        for sc in (v.match_scores or []):
-            if sc.score > best_score:
-                best_score = sc.score
-                best_profile = sc.profile_key
+        best_score, best_profile = _best_score(v)
+        if not best_profile:
+            from jobsignal import profiles as registry
+            best_profile = registry.default_name()
         # use unified cover generator from notify_bot
         from jobsignal.agents.notify_bot import _cover_text
         text = _cover_text(
@@ -365,15 +370,21 @@ def api_outreach_data(vid):
         session.close()
         return jsonify({"error": "not found"}), 404
     _, best_profile = _best_score(v)
-    profile_key = best_profile or "pm"
-    # map profile key to short key
-    key_map = {
-        "Senior AI PM": "ai_pm",
-        "CPO / Head of Product": "cpo",
-        "Senior PM/PO": "pm",
-    }
-    short_key = key_map.get(profile_key, "pm")
-    data = get_outreach_data(v, short_key)
+    from jobsignal import profiles as registry
+    from jobsignal.agents.hh_apply import letter_problem
+    profile_name = best_profile or registry.default_name()
+    # Письмо то же, что уходит в автоотклике и боте: по резюме профиля и
+    # тексту вакансии. Готовый черновик берём, если он годен; иначе пишем
+    # и сохраняем, чтобы повторное открытие не стоило нового вызова модели.
+    cover = (v.draft_text or "").strip()
+    if not cover or letter_problem(cover) is not None:
+        from jobsignal.agents.notify_bot import _cover_text
+        cover = _cover_text(v.role or "", v.company or "", profile_name,
+                            vacancy_id=v.id)
+        if cover and letter_problem(cover) is None:
+            v.draft_text = cover
+            session.commit()
+    data = get_outreach_data(v, profile_name, cover_text=cover or None)
     session.close()
     return jsonify(data)
 
@@ -491,18 +502,13 @@ def api_resume(vid):
     _, best_profile = _best_score(v)
     session.close()
 
-    profile_map = {
-        "Senior AI PM": "ai_pm",
-        "CPO / Head of Product": "cpo",
-        "Senior PM/PO": "pm",
-    }
-    key = profile_map.get(best_profile, "pm")
-    resume_dir = Path(__file__).parent.parent.parent / "config" / "resumes"
-    pdf_path = resume_dir / f"{key}.pdf"
-    if not pdf_path.exists():
+    from jobsignal import profiles as registry
+    prof = registry.resolve(best_profile)
+    pdf_path = prof.resume_pdf() if prof else None
+    if pdf_path is None:
         abort(404)
     return send_file(str(pdf_path), as_attachment=True,
-                     download_name=f"resume_{key}.pdf")
+                     download_name=f"resume_{prof.key}.pdf")
 
 
 # ── channels page ─────────────────────────────────────────────────────────────
@@ -642,7 +648,9 @@ def api_search_channels():
 # ── resumes page ─────────────────────────────────────────────────────────────
 
 RESUME_DIR = Path(__file__).parent.parent.parent / "config" / "resumes"
-PROFILE_KEYS = {"ai_pm", "cpo", "pm"}
+def _profile_keys() -> set[str]:
+    from jobsignal import profiles as registry
+    return set(registry.keys())
 
 
 @app.route("/resumes")
@@ -656,8 +664,13 @@ def resumes_page():
 def api_resumes_status():
     RESUME_DIR.mkdir(parents=True, exist_ok=True)
     from jobsignal.agents.resume_parser import pdf_path_for
+    from jobsignal import profiles as registry
     result = {}
-    for key in PROFILE_KEYS:
+    meta = []
+    for p in registry.all_profiles():
+        meta.append({"key": p.key, "name": p.name, "label": p.letter_label,
+                     "hh_resume_title": p.hh_resume_title})
+    for key in _profile_keys():
         # Не RESUME_DIR/<key>.pdf: отдельных PDF по профилям больше нет, все
         # три ссылаются на мастер-резюме. Иначе страница показывала бы
         # «файла нет» там, где письма и отправка резюме работают.
@@ -672,14 +685,14 @@ def api_resumes_status():
             }
         else:
             result[key] = {"exists": False}
-    return jsonify({"resumes": result})
+    return jsonify({"resumes": result, "profiles": meta})
 
 
 @app.route("/api/resumes/upload", methods=["POST"])
 @_requires_auth
 def api_resumes_upload():
     profile_key = request.form.get("profile_key", "").strip()
-    if profile_key not in PROFILE_KEYS:
+    if profile_key not in _profile_keys():
         return jsonify({"ok": False, "error": "Неверный profile_key"}), 400
 
     file = request.files.get("file")
@@ -716,7 +729,7 @@ def api_resumes_upload():
 @app.route("/api/resumes/download/<key>")
 @_requires_auth
 def api_resumes_download(key):
-    if key not in PROFILE_KEYS:
+    if key not in _profile_keys():
         abort(404)
     from jobsignal.agents.resume_parser import pdf_path_for
     path = pdf_path_for(key)

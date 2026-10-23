@@ -204,7 +204,25 @@ def _hh_get(url: str, **kw) -> requests.Response:
     proxy_meter.add("hh-search", n)
     return r
 
-# Поисковые запросы под три профиля
+def _profile_searches() -> list[dict]:
+    """Запросы из config/profiles.yaml (поле searches у каждого профиля).
+
+    Раньше запросы были зашиты здесь под три профиля, и смена позиционирования
+    23.10 (лояльность и CRM) без правки кода не дошла бы до поиска. Регион —
+    HH_SEARCH_AREA (1 — Москва, 113 — вся Россия).
+    """
+    from jobsignal import profiles
+    area = int(os.environ.get("HH_SEARCH_AREA", "1"))
+    out, seen = [], set()
+    for p in profiles.all_profiles():
+        for q in p.searches:
+            if q.lower() not in seen:
+                seen.add(q.lower())
+                out.append({"text": q, "area": area})
+    return out
+
+
+# Запасные запросы — если в profiles.yaml у профилей нет searches.
 DEFAULT_SEARCHES = [
     # CPO / Head of Product
     {"text": "CPO", "area": 1, "experience": "between3And6"},
@@ -631,7 +649,7 @@ def _format_post_text(item: dict) -> str:
 class HHCollector:
     def __init__(self, searches: Optional[list[dict]] = None):
         self._sf = get_session_factory()
-        self.searches = searches or DEFAULT_SEARCHES
+        self.searches = searches or _profile_searches() or DEFAULT_SEARCHES
 
     def run(self) -> dict:
         session = self._sf()

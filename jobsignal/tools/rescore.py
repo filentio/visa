@@ -9,9 +9,17 @@
     tools/rescore.py --limit 20                    # посмотреть, кого возьмёт
     tools/rescore.py --limit 20 --apply            # переоценить
     tools/rescore.py --min-score 70 --max-score 79 --apply   # очередь на решение
+    tools/rescore.py --profiles-changed --days 14            # после смены профилей
+    tools/rescore.py --profiles-changed --days 14 --limit 400 --apply
+
+--profiles-changed (23.10, смена профилей в config/profiles.yaml): берёт
+вакансии, у которых НЕТ оценок под действующими профилями, без оглядки на
+старый балл — вакансия про лояльность под прежними PM-профилями получила
+30 и под фильтр «от 60» не попала бы. Черновик письма у таких вакансий
+стирается: он написан под снятый профиль и другое резюме.
 
 Без --apply ничего не меняет. Старые баллы перед заменой сохраняются в
-/tmp/rescore_backup_<время>.json — восстановить вручную, если понадобится.
+data/rescore_backup_<время>.json — восстановить вручную, если понадобится.
 
 Берём только то, что имеет смысл переоценивать: основные вакансии, по которым
 отклик ещё не ушёл, и с баллом от --min-score (по умолчанию 60). Историю
@@ -46,7 +54,7 @@ from jobsignal.db import (Application, MatchScore, Vacancy,  # noqa: E402
 
 
 def pick(session, limit: int, days: int, source: str | None,
-         lo: int, hi: int):
+         lo: int, hi: int, profiles_changed: bool = False):
     """Вакансии, которые стоит переоценить: свежие, основные, без отклика.
 
     Диапазон баллов обязателен по смыслу: переоценивать имеет смысл тех, у кого
@@ -62,8 +70,15 @@ def pick(session, limit: int, days: int, source: str | None,
                 ~Vacancy.applications.any(Application.sent_at.isnot(None))))
     if source:
         q = q.where(Vacancy.contact_type == source)
-    rows = [v for v in session.execute(q).scalars().all()
-            if lo <= best(v) <= hi]
+    if profiles_changed:
+        from jobsignal import profiles
+        active = set(profiles.names())
+        rows = [v for v in session.execute(q).scalars().all()
+                if v.match_scores and not any(m.profile_key in active
+                                              for m in v.match_scores)]
+    else:
+        rows = [v for v in session.execute(q).scalars().all()
+                if lo <= best(v) <= hi]
     # Сначала те, у кого исходный текст есть и он длиннее пересказа: именно у
     # них оценка и менялась. Вакансия без поста переоценку не изменит.
     rows.sort(key=lambda v: -(len((v.raw_post.text if v.raw_post else "") or "")))
@@ -92,19 +107,30 @@ def main() -> int:
     ap.add_argument("--max-score", type=int, default=100)
     ap.add_argument("--apply", action="store_true",
                     help="без него только показывает выборку")
+    ap.add_argument("--profiles-changed", action="store_true",
+                    help="переоценить вакансии без оценок под действующими "
+                         "профилями (после правки config/profiles.yaml)")
     opts = ap.parse_args()
+    if opts.profiles_changed and not opts.source:
+        # Матчер оценивает только MATCH_SOURCES (по умолчанию hh): вакансии
+        # других источников остались бы NEW без оценки.
+        import os
+        opts.source = (os.environ.get("MATCH_SOURCES") or "hh").split(",")[0].strip() or None
+        if opts.source == "*":
+            opts.source = None
 
     sf = get_session_factory()
     session = sf()
     vacs = pick(session, opts.limit, opts.days, opts.source,
-                opts.min_score, opts.max_score)
+                opts.min_score, opts.max_score, opts.profiles_changed)
     if not vacs:
         print("подходящих вакансий нет — проверь --days, --source и "
               "--min-score")
         return 1
 
-    print(f"выборка: балл {opts.min_score}-{opts.max_score}, "
-          f"за {opts.days} дней, источник {opts.source or 'любой'}\n")
+    what = ("без оценок под действующими профилями" if opts.profiles_changed
+            else f"балл {opts.min_score}-{opts.max_score}")
+    print(f"выборка: {what}, за {opts.days} дней, источник {opts.source or 'любой'}\n")
     print(f"{'id':>6} {'балл':>5} {'пересказ':>9} {'полный текст':>13}  роль")
     for v in vacs:
         full = len((v.raw_post.text if v.raw_post else "") or "")
@@ -112,12 +138,13 @@ def main() -> int:
               f"{(v.role or '?')[:40]}")
 
     if not opts.apply:
-        print(f"\nвыбрано {len(vacs)} вакансий. Это просмотр; для переоценки "
-              f"добавь --apply")
+        print(f"\nвыбрано {len(vacs)} вакансий, переоценка обойдётся примерно в "
+              f"${len(vacs) * 0.006:.2f}. Это просмотр; для переоценки добавь --apply")
         return 0
 
     # Старые баллы на диск — до того, как удалим строки.
-    backup = Path(f"/tmp/rescore_backup_{int(time.time())}.json")
+    backup = Path(f"data/rescore_backup_{int(time.time())}.json")
+    backup.parent.mkdir(parents=True, exist_ok=True)
     old = {v.id: {"best": best(v), "status": v.status.value,
                   "scores": [{"profile": m.profile_key, "score": m.score,
                               "reason": m.reason} for m in v.match_scores]}
@@ -131,6 +158,9 @@ def main() -> int:
             session.delete(m)
         # Матчер берёт только NEW — иначе выборку он просто не увидит.
         v.status = VacancyStatus.new
+        if opts.profiles_changed:
+            # Письмо написано под снятый профиль и прежнее резюме.
+            v.draft_text = None
     session.commit()
     session.close()
 

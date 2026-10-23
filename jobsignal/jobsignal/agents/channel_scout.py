@@ -73,10 +73,10 @@ FETCH_DELAY = 3.0
 # Запросы к глобальному поиску Telegram. Переопределяются TG_SCOUT_QUERIES
 # (через запятую).
 DEFAULT_QUERIES = [
-    "product manager вакансии", "продакт менеджер вакансии", "вакансии продукт",
-    "CPO вакансии", "head of product", "product owner вакансии",
-    "AI product manager", "fintech вакансии", "IT вакансии senior",
-    "вакансии менеджер продукта",
+    "product owner вакансии", "продакт менеджер вакансии", "вакансии менеджер продукта",
+    "fintech вакансии", "AI product manager", "IT вакансии senior",
+    "вакансии CRM маркетинг", "программа лояльности вакансии", "retention вакансии",
+    "маркетинг вакансии head",
 ]
 
 SCOUT_SOURCE = "auto_scout"
@@ -184,21 +184,16 @@ def telegram_candidates(skip: set[str]) -> tuple[dict[str, dict], str]:
 # ── 2. проверка ──────────────────────────────────────────────────────────────
 
 def _target_roles() -> str:
+    """Целевые роли — из профилей (поле focus в config/profiles.yaml)."""
     custom = os.environ.get("TG_SCOUT_ROLES", "").strip()
     if custom:
         return custom
     try:
-        # Только имена из profiles.yaml: get_config().profiles ещё и читает
-        # резюме, а для подсказки модели они не нужны.
-        import yaml
-        from jobsignal.config import CONFIG_DIR
-        data = yaml.safe_load((CONFIG_DIR / "profiles.yaml").read_text()) or {}
-        names = [p.get("name", "") for p in data.get("profiles", []) if p.get("name")]
+        from jobsignal import profiles
+        text = profiles.focus_text()
     except Exception:  # noqa: BLE001
-        names = []
-    base = ("продакт-менеджмент: product manager, product owner, head of product, "
-            "CPO, директор по продукту, AI/ML product manager; уровень senior и выше")
-    return base + (f" (профили кандидата: {', '.join(names)})" if names else "")
+        text = ""
+    return text or "продакт-менеджмент, уровень senior и выше"
 
 
 JUDGE_SYSTEM = (
@@ -209,8 +204,9 @@ JUDGE_SYSTEM = (
     "relevant — это вакансия, на которую кандидат реально может откликнуться "
     "по роли и уровню.\n\n"
     "Целевые роли кандидата: {roles}.\n\n"
-    "Вакансии разработчиков, дизайнеров, аналитиков, маркетологов, продажников, "
-    "джунов и стажёров — не relevant, даже если в названии есть слово «продукт».\n\n"
+    "Вакансии вне целевых ролей (разработка, дизайн, продажи, рядовые "
+    "исполнители, джуны и стажёры) — не relevant, даже если в названии есть "
+    "знакомое слово.\n\n"
     "Отвечай строго одним JSON без markdown:\n"
     '{{"posts": [{{"n": 1, "vacancy": true, "relevant": false}}], '
     '"niche": "<ниша канала 2-4 слова>", "summary": "<одна фраза: что за канал>"}}'

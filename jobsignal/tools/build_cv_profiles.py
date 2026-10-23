@@ -61,26 +61,33 @@ FOCUS = {
 }
 
 
+def _targets():
+    """(key, name, focus, pdf, cv_path) по реестру профилей; у профиля без
+    своего PDF — общий config/master_cv.pdf."""
+    from jobsignal import profiles
+    for p in profiles.all_profiles():
+        pdf = p.resume_pdf() or (PDF if PDF.exists() else None)
+        out = Path(p.cv_path) if p.cv_path else Path(f"config/cv_{p.key}.md")
+        yield p.key, p.name, p.focus or FOCUS.get(p.key, p.name), pdf, out
+
+
 def main() -> int:
     apply = "--apply" in sys.argv
-    if not PDF.exists():
-        print(f"нет {PDF} — загрузи PDF резюме под этим именем")
-        return 1
-
-    from jobsignal.agents.resume_parser import _extract_pdf_text
-    text = (_extract_pdf_text(str(PDF)) or "").strip()
-    if len(text) < 500:
-        print(f"из PDF извлеклось всего {len(text)} знаков — это скан или "
-              f"защищённый файл, выжимку по нему не собрать")
-        return 1
-    print(f"текст резюме: {len(text)} знаков\n")
-
+    from jobsignal.agents.resume_parser import extract_text
     from jobsignal.config import get_config
     from jobsignal.llm import complete_text
     model = get_config().settings.anthropic_model
 
-    for key, (name, path) in OUT.items():
-        user = (f"ПРОФИЛЬ: {name}\nАКЦЕНТ: {FOCUS[key]}\n\n"
+    for key, name, focus, pdf, path in _targets():
+        if pdf is None:
+            print(f"{key}: нет PDF резюме (config/resumes/{key}.pdf) — пропускаю")
+            continue
+        text = (extract_text(str(pdf)) or "").strip()
+        if len(text) < 500:
+            print(f"{key}: из {pdf} извлеклось всего {len(text)} знаков — скан или "
+                  f"защищённый файл, пропускаю")
+            continue
+        user = (f"ПРОФИЛЬ: {name}\nАКЦЕНТ: {focus}\n\n"
                 f"РЕЗЮМЕ:\n{text[:12000]}")
         out = complete_text(SYSTEM, user, model=model, max_tokens=3000,
                             tag=f"cv_{key}", cache_system=True).strip()
@@ -94,7 +101,8 @@ def main() -> int:
             path.write_text(out + "\n", encoding="utf-8")
 
     if apply:
-        print("записано. Проверка: .venv/bin/python run.py match 5")
+        print("записано. Чтобы оценка брала выжимку, а не весь PDF, пропиши "
+              "cv_path профилю в config/profiles.yaml. Проверка: run.py match 5")
     else:
         print("это предпросмотр. Проверь, что модель не дописала фактов, "
               "которых нет в резюме, и повтори с --apply")

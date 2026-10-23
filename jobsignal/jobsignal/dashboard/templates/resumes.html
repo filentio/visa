@@ -109,32 +109,17 @@ nav{flex-wrap:wrap;row-gap:8px;}
 
   <div class="hint">
     <strong>Как это работает:</strong> при отклике на вакансию дашборд смотрит, 
-    у какого профиля лучший балл (AI PM / CPO / Senior PM), и предлагает скачать 
-    именно ту версию резюме. Обнови файл — при следующем отклике подтянется новая версия.
+    у какого профиля лучший балл, и берёт резюме этого профиля: прикладывает к письму
+    в Telegram, пишет письмо по его тексту и выбирает его в форме отклика на hh.ru.
+    Профили задаются в config/profiles.yaml. Обнови файл — при следующем отклике подтянется новая версия.
   </div>
 </div>
 
 <script>
-const PROFILES = [
-  {
-    key: 'ai_pm',
-    name: 'Senior AI PM',
-    icon: '🤖',
-    desc: 'LLM-пайплайны, RAG-ассистенты, рекомендательные системы, AI-продукты'
-  },
-  {
-    key: 'cpo',
-    name: 'CPO / Head of Product',
-    icon: '🎯',
-    desc: 'Стратегия, портфель продуктов, команда 15+, P&L-ответственность'
-  },
-  {
-    key: 'pm',
-    name: 'Senior PM / PO',
-    icon: '⚙️',
-    desc: 'Discovery/delivery, A/B-тесты, метрики конверсии, финтех'
-  },
-];
+// Профили приходят с сервера (config/profiles.yaml), а не прописаны здесь:
+// 23.10 их сменили, и страница показывала бы три снятых профиля.
+let PROFILES = [];
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 async function loadStatus() {
   const r = await fetch('/api/resumes/status');
@@ -146,6 +131,11 @@ async function render() {
   try {
     const d = await loadStatus();
     status = d.resumes || {};
+    PROFILES = (d.profiles || []).map(p => ({
+      key: p.key, name: p.name, icon: '📄',
+      desc: (p.label && p.label !== p.name ? p.label : '')
+            + (p.hh_resume_title ? ` · на hh.ru: резюме со словами «${p.hh_resume_title}» в названии` : '')
+    }));
   } catch(e) {}
 
   const grid = document.getElementById('profiles-grid');
@@ -162,8 +152,8 @@ async function render() {
         <div class="profile-icon">${p.icon}</div>
       </div>
       <div>
-        <div class="profile-name">${p.name}</div>
-        <div class="profile-desc">${p.desc}</div>
+        <div class="profile-name">${esc(p.name)}</div>
+        <div class="profile-desc">${esc(p.desc)}</div>
       </div>
 
       ${hasFile ? `

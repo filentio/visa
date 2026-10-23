@@ -127,39 +127,29 @@ class AppConfig:
 
     @property
     def profiles(self) -> list[dict]:
-        """Карьерные профили для мульти-таргет скоринга: [{name, cv_text}, ...].
-        Читает config/profiles.yaml (name + cv_path), подгружает текст резюме."""
+        """Профили с текстом для оценки: [{name, key, cv_text, resume_path}, ...].
+
+        Источник — реестр jobsignal/profiles.py (config/profiles.yaml). Текст
+        для оценки — выжимка cv_path, а если её нет — текст PDF резюме.
+        Профиль без текста пропускаем громко: оценка по пустому резюме дала
+        бы нули по всем вакансиям.
+        """
         import logging
 
+        from jobsignal import profiles as registry
+
         log = logging.getLogger("jobsignal")
-        path = CONFIG_DIR / "profiles.yaml"
-        if not path.exists():
-            return []
-        with path.open(encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
         out: list[dict] = []
-        for p in data.get("profiles", []):
-            name = p.get("name")
-            cv_path = p.get("cv_path")
-            if not name or not cv_path:
-                continue
-            cv_file = Path(cv_path) if Path(cv_path).is_absolute() else (ROOT / cv_path)
-            if not cv_file.exists():
-                log.warning("[profiles] резюме не найдено: %s (профиль '%s') — пропускаю",
-                            cv_file, name)
-                continue
-            text = cv_file.read_text(encoding="utf-8").strip()
+        for p in registry.all_profiles():
+            text = p.cv_text()
             if not text:
-                log.warning("[profiles] резюме пустое: %s — пропускаю", cv_file)
+                log.warning("[profiles] у профиля «%s» нет текста резюме: ни %s, ни "
+                            "PDF (config/resumes/%s.pdf) — пропускаю",
+                            p.name, p.cv_path or "cv_path", p.key)
                 continue
-            # готовый PDF для отправки рекрутёру (опционально)
-            resume_path = None
-            rp = p.get("resume_path")
-            if rp:
-                rf = Path(rp) if Path(rp).is_absolute() else (ROOT / rp)
-                if rf.exists():
-                    resume_path = str(rf)
-            out.append({"name": name, "cv_text": text, "resume_path": resume_path})
+            pdf = p.resume_pdf()
+            out.append({"name": p.name, "key": p.key, "cv_text": text,
+                        "resume_path": str(pdf) if pdf else None})
         return out
 
 

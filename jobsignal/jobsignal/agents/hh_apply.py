@@ -189,7 +189,6 @@ NOT_ALLOWED_TEXT_RE = re.compile(
     re.IGNORECASE,
 )
 
-PROFILE_LABELS = ("Senior AI PM", "CPO / Head of Product", "Senior PM/PO")
 
 # Минимальная длина осмысленного письма. Всё короче — заглушка или обрыв.
 MIN_LETTER_CHARS = 200
@@ -381,6 +380,13 @@ def _net_fail_bump() -> int:
     return n
 
 
+def _resume_choice_pending() -> bool:
+    """Нужен выбор резюме на hh, а он ещё не включён после проверки."""
+    from jobsignal import profiles
+    titled = [p for p in profiles.all_profiles() if p.hh_resume_title]
+    return len(titled) > 1 and os.environ.get("HH_RESUME_CHOICE", "").strip() != "ready"
+
+
 # Попыток записать итог по вакансии, если база занята другим процессом.
 RECORD_TRIES = int(os.environ.get("HH_RECORD_TRIES", "6"))
 
@@ -463,9 +469,17 @@ class RunReport:
 # ── очередь и письма ─────────────────────────────────────────────────────────
 
 def _best_score(v: Vacancy) -> tuple[int, str]:
+    """Лучший балл среди ДЕЙСТВУЮЩИХ профилей (config/profiles.yaml).
+
+    23.10 профили сменились. Оценки снятых профилей в базе остались, и без
+    этого фильтра вакансия, оценённая на 85 под «CPO», ушла бы в автоотклик
+    с резюме Product Owner и письмом, написанным под CPO.
+    """
+    from jobsignal import profiles
+    active = set(profiles.names())
     best, label = 0, ""
     for m in (v.match_scores or []):
-        if (m.score or 0) > best:
+        if m.profile_key in active and (m.score or 0) > best:
             best, label = m.score, m.profile_key or ""
     return best, label
 
@@ -687,7 +701,9 @@ class HHApplyAgent(BaseAgent):
         from .notify_bot import _cover_text
 
         v = session.get(Vacancy, item["id"])
-        profile = item["profile"] if item["profile"] in PROFILE_LABELS else "Senior PM/PO"
+        from jobsignal import profiles
+        prof = profiles.resolve(item["profile"])
+        profile = prof.name if prof else item["profile"]
         # Полный текст вакансии, а не пересказ парсера: письмо должно
         # зацепиться за их конкретную задачу, а пересказ — одна фраза.
         vac_text = ((v.raw_post.text if v.raw_post is not None else "")
@@ -1025,6 +1041,20 @@ class HHApplyAgent(BaseAgent):
             self._ensure_log_table(session)
             queue = self._queue(session)
             report.queue_size = len(queue)
+
+            # 23.10: у кандидата на hh два резюме под два профиля. Пока выбор
+            # нужного резюме в форме отклика не проверен на живой странице
+            # (tools/probe_hh_resume_choice.py), боевые отправки стоят: иначе
+            # hh молча отправит резюме по умолчанию и под чужой профиль.
+            # Предпросмотр (dry-run) ничего не нажимает, его не держим.
+            if not self.dry_run and queue and _resume_choice_pending():
+                report.stopped_reason = (
+                    "автоотклик на паузе: профилей с отдельным резюме на hh "
+                    "несколько, а выбор резюме в форме отклика ещё не проверен "
+                    "(tools/probe_hh_resume_choice.py; после проверки "
+                    "HH_RESUME_CHOICE=ready в config/.env)")
+                log.warning("[hh_apply] %s", report.stopped_reason)
+                return report
 
             # Здесь стояла проверка section_blocked() на requests: она должна
             # была экономить запуски Chromium при блокировке. 03.10 выяснилось,

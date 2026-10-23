@@ -92,70 +92,18 @@ def normalize_hh_link(link: str) -> Optional[str]:
 
 
 # ── cover letter text for non-TG ─────────────────────────────────────────────
-
-COVER_TEMPLATE = """Меня заинтересовала позиция {role}{company_part}.
-
-{profile_highlight}
-
-{interest_line}
-
-Резюме прикладываю. Буду рад обсудить — когда удобно созвониться?"""
-
-PROFILE_HIGHLIGHTS = {
-    "cpo": (
-        "Опыт — CPO/Head of Product: вывел продукт с 0 до 130k MAU, "
-        "управлял портфелем из 5 продуктов и командой 15 человек, "
-        "P&L-ответственность."
-    ),
-    "ai_pm": (
-        "Специализация — AI Product: строил RAG-ассистент поддержки "
-        "(−40% нагрузки на КЦ), LLM+OCR скоринг, рекомендательную систему. "
-        "Self-built MVP на Cursor/Claude."
-    ),
-    "pm": (
-        "Опыт — Senior PM: 20+ A/B-тестов в год, онбординг 15→3 мин, "
-        "−22% отвала на активации, работал в финтехе (Альфа, Финам)."
-    ),
-}
-
-
-def build_cover_letter(
-    vacancy,
-    profile_key: str,
-    style: str = "default",
-) -> str:
-    """
-    Build cover letter text for hh.ru / form apply.
-    profile_key: cpo / ai_pm / pm
-    """
-    role = vacancy.role or "Product Manager"
-    company_part = f" в {vacancy.company}" if vacancy.company else ""
-    highlight = PROFILE_HIGHLIGHTS.get(
-        profile_key, PROFILE_HIGHLIGHTS["pm"]
-    )
-
-    if style == "short":
-        # 2-3 lines for forms with character limits
-        return (
-            f"Senior Product Manager, финтех + AI. "
-            f"{highlight.split('.')[0]}. "
-            f"Интересует {role}{company_part}. "
-            "Резюме прикладываю."
-        )
-
-    interest_line = f"Позиция {role} совпадает с моим фокусом и опытом."
-
-    return COVER_TEMPLATE.format(
-        role=role,
-        company_part=company_part,
-        profile_highlight=highlight,
-        interest_line=interest_line,
-    ).strip()
+# Здесь был шаблон письма с зашитыми «достижениями» по профилям: «вывел продукт
+# с 0 до 130k MAU», «работал в финтехе (Альфа, Финам)», «−22% отвала» —
+# половины этого в резюме нет. Кнопка «Откликнуться» в дашборде показывала
+# такой текст для hh, LinkedIn и форм. Убрано 23.10: письмо теперь одно на
+# весь проект — notify_bot._cover_text по резюме профиля; текст передаёт
+# вызывающий (см. dashboard.api_outreach_data).
 
 
 # ── outreach data builder ─────────────────────────────────────────────────────
 
-def get_outreach_data(vacancy, best_profile_key: str) -> dict:
+def get_outreach_data(vacancy, best_profile_key: str = "",
+                      cover_text: str | None = None) -> dict:
     """
     Returns everything dashboard needs to render the apply block
     for a non-TG vacancy.
@@ -179,7 +127,7 @@ def get_outreach_data(vacancy, best_profile_key: str) -> dict:
     }
 
     if contact_type == "linkedin":
-        data["cover_text"] = build_cover_letter(vacancy, best_profile_key, style="short")
+        data["cover_text"] = cover_text
         data["action_label"] = "Открыть профиль в LinkedIn"
         data["link"] = linkedin_url or link
         data["instructions"] = (
@@ -190,7 +138,7 @@ def get_outreach_data(vacancy, best_profile_key: str) -> dict:
     elif contact_type == "hh":
         canonical = normalize_hh_link(link)
         data["link"] = canonical or link
-        data["cover_text"] = build_cover_letter(vacancy, best_profile_key)
+        data["cover_text"] = cover_text
         data["action_label"] = "Открыть на hh.ru"
         data["instructions"] = (
             "Скопируй текст → открой вакансию → вставь в поле "
@@ -198,9 +146,7 @@ def get_outreach_data(vacancy, best_profile_key: str) -> dict:
         )
 
     elif contact_type == "form":
-        data["cover_text"] = build_cover_letter(
-            vacancy, best_profile_key, style="short"
-        )
+        data["cover_text"] = cover_text
         data["action_label"] = "Открыть форму"
         data["instructions"] = (
             "Скопируй текст → открой форму → вставь в поле «о себе» → "

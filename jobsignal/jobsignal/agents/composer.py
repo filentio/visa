@@ -98,9 +98,12 @@ def generate_draft(vacancy: Vacancy, profile_name: str, cv_text: str, model: str
 
 
 def best_profile_name(v: Vacancy) -> str | None:
+    """Лучший профиль среди действующих (config/profiles.yaml)."""
+    from jobsignal import profiles
+    active = set(profiles.names())
     best, bs = None, -1
     for m in v.match_scores:
-        if m.score is not None and m.score > bs:
+        if m.profile_key in active and m.score is not None and m.score > bs:
             # В модели поле называется profile_key (в нём лежит имя профиля,
             # например «Senior AI PM») — m.profile не существовало, и
             # best_profile_name падал с AttributeError на любой вакансии,
@@ -168,12 +171,14 @@ class ComposerAgent(BaseAgent):
 
 class Composer:
     def generate(self, vacancy, style: str = "metric_hook") -> str:
-        best_profile = "Senior PM/PO"
+        from jobsignal import profiles
+        active = set(profiles.names())
+        best_profile = profiles.default_name()
         best_score = 0
         for sc in (getattr(vacancy, 'match_scores', None) or []):
             score = sc.score if hasattr(sc, 'score') else sc.get('score', 0)
             prof = sc.profile_key if hasattr(sc, 'profile_key') else sc.get('profile_key', '')
-            if score > best_score:
+            if prof in active and (score or 0) > best_score:
                 best_score = score
                 best_profile = prof
         # Резюме берём из конфига, как это делает run() в этом же классе.
