@@ -444,6 +444,12 @@ async function loadVacancies(){
 }
 
 // ── card ──────────────────────────────────────────────────────────────────────
+// Текст вакансий приходит из чужих постов и страниц: в разметку только через
+// esc(), в href — только http(s). Кабинет открыт в интернет (26.10), и
+// пост с <script> или javascript:-ссылкой иначе выполнился бы в браузере.
+const esc = x => String(x ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const safeUrl = u => /^https?:\/\//i.test(u || '') ? esc(u) : '#';
+
 function buildCard(v){
   const div=document.createElement('div');
   div.className='card'+(v.is_new?' new-vacancy':'');
@@ -466,23 +472,23 @@ function buildCard(v){
     const pct=s.score||0;
     const isBest=k===v.best_profile;
     return `<div class="score-item${isBest?' score-best':''}">
-      <div class="score-profile">${k}</div>
+      <div class="score-profile">${esc(k)}</div>
       <div class="score-bar-wrap">
         <div class="score-bar"><div class="score-fill" style="width:${pct}%;background:${scoreColor(pct)}"></div></div>
         <span class="score-val" style="color:${scoreColor(pct)}">${pct}</span>
       </div>
-      ${isBest&&s.reason?`<div class="score-reason">${s.reason}</div>`:''}
+      ${isBest&&s.reason?`<div class="score-reason">${esc(s.reason)}</div>`:''}
     </div>`;
   }).join('');
 
   // contact button
   let contactBtn='';
   if(ct==='tg'&&v.recruiter_handle){
-    contactBtn=`<a href="https://t.me/${v.recruiter_handle.replace('@','')}" target="_blank">
-      <button class="btn btn-ghost">💬 ${v.recruiter_handle}</button></a>`;
+    contactBtn=`<a href="https://t.me/${encodeURIComponent(v.recruiter_handle.replace('@',''))}" target="_blank" rel="noopener noreferrer">
+      <button class="btn btn-ghost">💬 ${esc(v.recruiter_handle)}</button></a>`;
   } else if(v.link){
     const lbl={hh:'hh.ru →',form:'Форма →',linkedin:'LinkedIn →'}[ct]||'Открыть →';
-    contactBtn=`<a href="${v.link}" target="_blank"><button class="btn btn-ghost">🔗 ${lbl}</button></a>`;
+    contactBtn=`<a href="${safeUrl(v.link)}" target="_blank" rel="noopener noreferrer"><button class="btn btn-ghost">🔗 ${lbl}</button></a>`;
   }
 
   div.innerHTML=`
@@ -490,21 +496,22 @@ function buildCard(v){
       <div class="card-main">
         <div class="card-title">
           ${v.is_new?'<span class="badge b-new">новое</span>':''}
-          ${v.role}
+          ${esc(v.role)}
           ${ctBadge(ct)}
         </div>
         <div class="card-sub">
-          <span>${v.company}</span>
-          ${v.salary!=='—'?`<span>💰 ${v.salary}</span>`:''}
-          ${v.location!=='—'?`<span>📍 ${v.location}</span>`:''}
-          <span>${v.created_at}</span>
+          <span>${esc(v.company)}</span>
+          ${v.salary!=='—'?`<span>💰 ${esc(v.salary)}</span>`:''}
+          ${v.location!=='—'?`<span>📍 ${esc(v.location)}</span>`:''}
+          <span>${esc(v.created_at)}</span>
         </div>
       </div>
       <div class="card-scores">${pillsHtml}</div>
       <span class="card-chevron">▼</span>
     </div>
     <div class="card-body">
-      ${v.description&&v.description!=='—'?`<div class="desc">${v.description}</div>`:''}
+      ${v.description&&v.description!=='—'?`<div class="desc">${esc(v.description)}</div>`:''}
+      ${v.stale_scores?`<div class="desc" style="color:var(--amber)">Оценена под прежние профили — ждёт переоценки под текущие (страница «Резюме» → «Переоценить»)</div>`:''}
       <div class="scores">${barsHtml}</div>
       <div class="action-panel">
         <button class="btn btn-primary" onclick="toggleOutreach(${v.id})">✉️ Откликнуться</button>
@@ -518,7 +525,7 @@ function buildCard(v){
         <div class="outreach-title">Черновик сообщения</div>
         <div class="draft-controls">
           <select class="style-sel" id="sty-${v.id}">
-            ${STYLES.map(s=>`<option value="${s}">${STYLE_LABELS[s]||s}</option>`).join('')}
+            ${STYLES.map(s=>`<option value="${esc(s)}">${esc(STYLE_LABELS[s]||s)}</option>`).join('')}
           </select>
           <button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="generateDraft(${v.id})">
             Сгенерировать

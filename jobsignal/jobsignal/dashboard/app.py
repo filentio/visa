@@ -162,9 +162,20 @@ def _is_new(v: Vacancy) -> bool:
 
 
 def _vacancy_to_dict(v: Vacancy) -> dict:
-    best_score, best_profile = _best_score(v)
-    scores = {s.profile_key: {"score": s.score, "reason": s.reason}
-              for s in (v.match_scores or [])}
+    # Только действующие профили: оценки снятых профилей остаются в базе у
+    # непереоценённых вакансий, но показывать их и сортировать по ним —
+    # значит показывать вакансию, на которую система не откликнется (26.10:
+    # телеграм-вакансии с баллами под три старых профиля).
+    from jobsignal import profiles as registry
+    active = set(registry.names())
+    mine = [s for s in (v.match_scores or []) if s.profile_key in active]
+    scores = {s.profile_key: {"score": s.score, "reason": s.reason} for s in mine}
+    if mine:
+        best = max(mine, key=lambda s: s.score or 0)
+        best_score, best_profile = best.score or 0, best.profile_key
+    else:
+        best_score, best_profile = 0, ""
+    stale = bool(v.match_scores) and not mine
     contact_type = v.contact_type or detect_contact_type(v)
     return {
         "id": v.id,
@@ -185,6 +196,7 @@ def _vacancy_to_dict(v: Vacancy) -> dict:
         "has_tg": bool(v.recruiter_handle),
         "has_link": bool(v.link),
         "is_new": _is_new(v),
+        "stale_scores": stale,
     }
 
 
@@ -923,9 +935,17 @@ def _rescore_candidates(days: int = 14) -> int:
         params = {f"n{i}": n for i, n in enumerate(names)}
         params["days"] = f"-{days} days"
         params["cnt"] = len(names)
+        # Те же источники, что оценивает матчер (MATCH_SOURCES): 26.10
+        # переоценка взяла только hh, и телеграм остался со старыми оценками.
+        from jobsignal.agents.matcher import MATCH_SOURCES
+        src = ""
+        if MATCH_SOURCES:
+            srcs = sorted(MATCH_SOURCES)
+            src = "and v.contact_type in (" + ",".join(f":s{i}" for i in range(len(srcs))) + ")"
+            params.update({f"s{i}": x for i, x in enumerate(srcs)})
         return session.execute(_t(f"""
             select count(*) from vacancies v
-             where v.is_primary = 1 and v.contact_type = 'hh'
+             where v.is_primary = 1 {src}
                and v.created_at > datetime('now', :days)
                and exists (select 1 from match_scores m where m.vacancy_id = v.id)
                and (select count(distinct m.profile_key) from match_scores m

@@ -70,7 +70,8 @@ def pick(session, limit: int, days: int, source: str | None,
                 Vacancy.created_at >= _cutoff(days),
                 ~Vacancy.applications.any(Application.sent_at.isnot(None))))
     if source:
-        q = q.where(Vacancy.contact_type == source)
+        q = q.where(Vacancy.contact_type.in_([x.strip() for x in source.split(",")
+                                              if x.strip()]))
     if profiles_changed:
         from jobsignal import profiles
         active = set(profiles.names())
@@ -103,7 +104,7 @@ def main() -> int:
     ap.add_argument("--days", type=int, default=7,
                     help="насколько свежие вакансии брать (по умолчанию неделя)")
     ap.add_argument("--source", default=None,
-                    help="contact_type: hh / tg / form / linkedin")
+                    help="contact_type через запятую: hh / tg / form / linkedin")
     ap.add_argument("--min-score", type=int, default=60,
                     help="нижняя граница текущего балла (по умолчанию 60: "
                          "ниже переоценка ничего не решает)")
@@ -115,12 +116,12 @@ def main() -> int:
                          "профилями (после правки config/profiles.yaml)")
     opts = ap.parse_args()
     if opts.profiles_changed and not opts.source:
-        # Матчер оценивает только MATCH_SOURCES (по умолчанию hh): вакансии
-        # других источников остались бы NEW без оценки.
-        import os
-        opts.source = (os.environ.get("MATCH_SOURCES") or "hh").split(",")[0].strip() or None
-        if opts.source == "*":
-            opts.source = None
+        # Все источники, которые оценивает матчер (MATCH_SOURCES). 26.10 здесь
+        # брался только первый (hh), и телеграм-вакансии остались с оценками
+        # под снятые профили. Источники вне MATCH_SOURCES матчер не оценит —
+        # их не берём, иначе они остались бы NEW без оценки.
+        from jobsignal.agents.matcher import MATCH_SOURCES
+        opts.source = ",".join(sorted(MATCH_SOURCES)) if MATCH_SOURCES else None
 
     # 26.10 переоценка с --apply стёрла оценки у 400 вакансий, а заново
     # оценить не смогла: PDF новых профилей на сервере ещё не было, и матчер
