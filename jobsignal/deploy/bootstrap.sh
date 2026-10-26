@@ -61,9 +61,12 @@ if [ "$enable_mode" -eq 0 ]; then
   # которые в репозиторий не попадают и при обновлении не должны затираться.
   cp -r "$SRC/jobsignal/jobsignal" "$SRC/jobsignal/tools" "$SRC/jobsignal/deploy" "$APP/"
   cp "$SRC/jobsignal/run.py" "$SRC/jobsignal/run_polling.py" "$SRC/jobsignal/requirements.txt" "$APP/"
-  for f in channels.yaml profiles.yaml .env.example; do
+  for f in channels.yaml .env.example; do
     cp "$SRC/jobsignal/config/$f" "$APP/config/$f"
   done
+  # Профили правятся в кабинете (страница «Резюме») и живут в config/profiles.yaml
+  # на сервере. Перезаписывать их файлом из репозитория при обновлении нельзя.
+  [ -f "$APP/config/profiles.yaml" ] || cp "$SRC/jobsignal/config/profiles.yaml" "$APP/config/profiles.yaml"
 
   echo "==> 4/7 окружение Python (несколько минут)"
   [ -d "$APP/.venv" ] || python3 -m venv "$APP/.venv"

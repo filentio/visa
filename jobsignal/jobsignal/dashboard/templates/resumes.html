@@ -84,6 +84,35 @@
     color: var(--text2); font-size: 13px; line-height: 1.6; }
   .hint strong { color: var(--text); }
 nav{flex-wrap:wrap;row-gap:8px;}
+
+  /* профили */
+  .add-zone { margin-bottom: 24px; }
+  .add-zone .drop-zone { padding: 28px 16px; }
+  .plist { display: flex; flex-direction: column; gap: 16px; }
+  .pcard { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+  .pcard.default { border-color: var(--accent); }
+  .phead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .pname { font-weight: 700; font-size: 16px; flex: 1; min-width: 180px; }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 9px; background: var(--bg3); color: var(--text2); }
+  .badge.def { background: rgba(99,102,241,.18); color: var(--accent2); }
+  .field label { display: block; font-size: 11px; color: var(--text2); margin-bottom: 4px; text-transform: uppercase; letter-spacing: .04em; }
+  .field input, .field textarea { width: 100%; background: var(--bg3); border: 1px solid var(--border);
+    color: var(--text); border-radius: 6px; padding: 8px 10px; font: inherit; font-size: 13px; }
+  .field textarea { min-height: 70px; resize: vertical; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 640px) { .grid2 { grid-template-columns: 1fr; } }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .btn { background: var(--bg3); border: 1px solid var(--border); color: var(--text); border-radius: 6px;
+    padding: 7px 12px; font-size: 12px; cursor: pointer; position: relative; overflow: hidden; }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); }
+  .btn.danger:hover { border-color: var(--red); color: var(--red); }
+  .btn input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .rescore { background: var(--bg2); border: 1px solid var(--amber); border-radius: var(--radius);
+    padding: 14px 16px; margin-bottom: 20px; display: none; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .rescore.show { display: flex; }
+  .rescore span { flex: 1; min-width: 200px; font-size: 13px; line-height: 1.5; }
 </style>
 </head>
 <body>
@@ -97,163 +126,169 @@ nav{flex-wrap:wrap;row-gap:8px;}
 </nav>
 
 <div class="wrap">
-  <h2>Резюме по профилям</h2>
+  <h2>Резюме и профили поиска</h2>
   <p class="subtitle">
-    Загрузи PDF для каждого профиля. Дашборд автоматически предложит нужную версию
-    в зависимости от того, под какой профиль вакансия набрала лучший балл.
+    Каждое резюме — отдельный профиль: под него оцениваются вакансии, по нему
+    пишутся письма, его же автоотклик выбирает на hh.ru. Загрузи PDF — система
+    сама прочитает резюме, назовёт профиль и подберёт запросы поиска. Поправить
+    можно прямо здесь.
   </p>
 
-  <div class="profiles" id="profiles-grid">
-    <!-- rendered by JS -->
+  <div class="rescore" id="rescore">
+    <span id="rescore-text"></span>
+    <button class="btn primary" onclick="startRescore()">Переоценить</button>
   </div>
 
+  <div class="add-zone">
+    <div class="drop-zone" id="dz-new"
+         ondragover="dragOver(event,'new')" ondragleave="dragLeave('new')" ondrop="drop(event,'')">
+      <input type="file" accept=".pdf" onchange="pick(event,'')">
+      <div class="dz-icon">➕</div>
+      <div class="dz-text"><strong>Добавить резюме</strong> — перетащи PDF или нажми.<br>
+        Профиль создастся сам: имя, должность, фокус и запросы поиска.</div>
+    </div>
+    <div class="status" id="st-new"></div>
+  </div>
+
+  <div class="plist" id="plist"></div>
+
   <div class="hint">
-    <strong>Как это работает:</strong> при отклике на вакансию дашборд смотрит, 
-    у какого профиля лучший балл, и берёт резюме этого профиля: прикладывает к письму
-    в Telegram, пишет письмо по его тексту и выбирает его в форме отклика на hh.ru.
-    Профили задаются в config/profiles.yaml. Обнови файл — при следующем отклике подтянется новая версия.
+    <strong>Как это работает.</strong> Матчер ставит каждой вакансии балл под каждый
+    профиль. Отклик идёт с резюме того профиля, у которого балл выше: письмо пишется
+    по его тексту, PDF прикладывается в Telegram, а на hh.ru выбирается резюме, в
+    названии которого есть слова из поля «Название резюме на hh». Запросы поиска
+    hh берутся из всех профилей. Первый профиль — основной: он используется, когда
+    профиль вакансии неизвестен.
   </div>
 </div>
 
 <script>
-// Профили приходят с сервера (config/profiles.yaml), а не прописаны здесь:
-// 23.10 их сменили, и страница показывала бы три снятых профиля.
-let PROFILES = [];
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let PROFILES = [];
 
-async function loadStatus() {
-  const r = await fetch('/api/resumes/status');
-  return await r.json();
+async function load() {
+  const r = await fetch('/api/profiles');
+  PROFILES = (await r.json()).profiles || [];
+  render();
+  checkRescore();
 }
 
-async function render() {
-  let status = {};
-  try {
-    const d = await loadStatus();
-    status = d.resumes || {};
-    PROFILES = (d.profiles || []).map(p => ({
-      key: p.key, name: p.name, icon: '📄',
-      desc: (p.label && p.label !== p.name ? p.label : '')
-            + (p.hh_resume_title ? ` · на hh.ru: резюме со словами «${p.hh_resume_title}» в названии` : '')
-    }));
-  } catch(e) {}
-
-  const grid = document.getElementById('profiles-grid');
-  grid.innerHTML = '';
-
-  PROFILES.forEach(p => {
-    const info = status[p.key] || {};
-    const hasFile = info.exists;
-
-    const card = document.createElement('div');
-    card.className = 'profile-card';
-    card.innerHTML = `
-      <div>
-        <div class="profile-icon">${p.icon}</div>
+function render() {
+  const box = document.getElementById('plist');
+  if (!PROFILES.length) { box.innerHTML = '<div class="no-file">Профилей нет — добавь резюме выше</div>'; return; }
+  box.innerHTML = PROFILES.map(p => `
+    <div class="pcard ${p.is_default ? 'default' : ''}" id="card-${esc(p.key)}">
+      <div class="phead">
+        <div class="pname">${esc(p.name)}</div>
+        ${p.is_default ? '<span class="badge def">основной</span>' : ''}
+        <span class="badge">${esc(p.key)}</span>
       </div>
-      <div>
-        <div class="profile-name">${esc(p.name)}</div>
-        <div class="profile-desc">${esc(p.desc)}</div>
-      </div>
-
-      ${hasFile ? `
+      ${p.pdf.exists ? `
         <div class="current-file">
           <span class="cf-icon">📄</span>
-          <span class="cf-name">${info.filename || p.key + '.pdf'}</span>
-          <a class="cf-dl" href="/api/resumes/download/${p.key}" download>↓</a>
-        </div>
-        <div style="font-size:11px;color:var(--gray);margin-top:-8px">
-          Обновлено: ${info.updated || '—'} · ${info.size_kb || '?'} КБ
-        </div>
-      ` : `
-        <div class="no-file">Файл не загружен</div>
-      `}
-
-      <div class="drop-zone" id="dz-${p.key}"
-           ondragover="handleDragOver(event,'${p.key}')"
-           ondragleave="handleDragLeave('${p.key}')"
-           ondrop="handleDrop(event,'${p.key}')">
-        <input type="file" accept=".pdf" onchange="handleFile(event,'${p.key}')">
-        <div class="dz-icon">${hasFile ? '🔄' : '⬆️'}</div>
-        <div class="dz-text">
-          <strong>${hasFile ? 'Заменить PDF' : 'Загрузить PDF'}</strong><br>
-          перетащи или нажми
-        </div>
+          <span class="cf-name">${esc(p.pdf.filename)}</span>
+          <span class="cf-size">${esc(p.pdf.updated)} · ${p.pdf.size_kb} КБ</span>
+          <a class="cf-dl" href="/api/resumes/download/${encodeURIComponent(p.key)}" download>↓</a>
+        </div>` : `<div class="no-file" style="color:var(--red)">PDF не загружен — профиль не участвует в оценке</div>`}
+      <div class="grid2">
+        <div class="field"><label>Имя профиля</label><input id="f-name-${esc(p.key)}" value="${esc(p.name)}"></div>
+        <div class="field"><label>Должность (для письма)</label><input id="f-label-${esc(p.key)}" value="${esc(p.label)}"></div>
       </div>
-
-      <div class="progress-bar" id="pb-${p.key}">
-        <div class="progress-fill" id="pf-${p.key}"></div>
+      <div class="field"><label>Название резюме на hh (слова для выбора в отклике)</label>
+        <input id="f-hh-${esc(p.key)}" value="${esc(p.hh_resume_title)}"></div>
+      <div class="field"><label>Фокус: роли, домены, уровень</label>
+        <textarea id="f-focus-${esc(p.key)}">${esc(p.focus)}</textarea></div>
+      <div class="field"><label>Запросы поиска hh (по одному в строке)</label>
+        <textarea id="f-search-${esc(p.key)}">${esc((p.searches || []).join('\n'))}</textarea></div>
+      <div class="actions">
+        <button class="btn primary" onclick="save('${esc(p.key)}')">Сохранить</button>
+        <span class="btn">${p.pdf.exists ? 'Заменить PDF' : 'Загрузить PDF'}
+          <input type="file" accept=".pdf" onchange="pick(event,'${esc(p.key)}')"></span>
+        ${p.pdf.exists ? `<span class="btn" title="Заменить PDF и заново определить поля по резюме">Заменить и пересобрать
+          <input type="file" accept=".pdf" onchange="pick(event,'${esc(p.key)}',true)"></span>` : ''}
+        ${p.is_default ? '' : `<button class="btn" onclick="makeDefault('${esc(p.key)}')">Сделать основным</button>`}
+        <button class="btn danger" onclick="removeProfile('${esc(p.key)}')">Удалить</button>
       </div>
-      <div class="status" id="st-${p.key}"></div>
-    `;
-    grid.appendChild(card);
-  });
+      <div class="status" id="st-${esc(p.key)}"></div>
+    </div>`).join('');
 }
 
-function handleDragOver(e, key) {
-  e.preventDefault();
-  document.getElementById(`dz-${key}`).classList.add('drag-over');
-}
-function handleDragLeave(key) {
-  document.getElementById(`dz-${key}`).classList.remove('drag-over');
-}
-function handleDrop(e, key) {
-  e.preventDefault();
-  document.getElementById(`dz-${key}`).classList.remove('drag-over');
-  const file = e.dataTransfer.files[0];
-  if (file) uploadFile(file, key);
-}
-function handleFile(e, key) {
-  const file = e.target.files[0];
-  if (file) uploadFile(file, key);
+function setStatus(key, text, cls) {
+  const el = document.getElementById('st-' + (key || 'new'));
+  if (el) { el.innerHTML = text; el.className = 'status ' + (cls || ''); }
 }
 
-async function uploadFile(file, key) {
-  const st = document.getElementById(`st-${key}`);
-  const pb = document.getElementById(`pb-${key}`);
-  const pf = document.getElementById(`pf-${key}`);
+function dragOver(e, id) { e.preventDefault(); document.getElementById('dz-' + id).classList.add('drag-over'); }
+function dragLeave(id) { document.getElementById('dz-' + id).classList.remove('drag-over'); }
+function drop(e, key) { e.preventDefault(); dragLeave('new'); const f = e.dataTransfer.files[0]; if (f) upload(f, key, false); }
+function pick(e, key, rederive) { const f = e.target.files[0]; if (f) upload(f, key, !!rederive); }
 
-  if (!file.name.toLowerCase().endsWith('.pdf')) {
-    st.textContent = '✗ Только PDF файлы';
-    st.className = 'status err';
-    return;
-  }
-  if (file.size > 10 * 1024 * 1024) {
-    st.textContent = '✗ Файл слишком большой (макс 10 МБ)';
-    st.className = 'status err';
-    return;
-  }
-
-  st.innerHTML = '<span class="spinner"></span> Загружаю…';
-  st.className = 'status loading';
-  pb.classList.add('show');
-  pf.style.width = '30%';
-
+async function upload(file, key, rederive) {
+  if (!file.name.toLowerCase().endsWith('.pdf')) { setStatus(key, '✗ Нужен PDF', 'err'); return; }
+  if (file.size > 10 * 1024 * 1024) { setStatus(key, '✗ Файл больше 10 МБ', 'err'); return; }
+  setStatus(key, `<span class="spinner"></span> ${key ? 'Загружаю' : 'Читаю резюме и создаю профиль'}… до минуты`, 'loading');
   const form = new FormData();
   form.append('file', file);
-  form.append('profile_key', key);
-
+  if (key) form.append('key', key);
+  if (rederive) form.append('rederive', '1');
   try {
-    pf.style.width = '70%';
-    const r = await fetch('/api/resumes/upload', { method: 'POST', body: form });
-    pf.style.width = '100%';
+    const r = await fetch('/api/profiles/upload', { method: 'POST', body: form });
     const d = await r.json();
-    if (d.ok) {
-      st.textContent = `✓ Загружено (${d.size_kb} КБ)`;
-      st.className = 'status ok';
-      setTimeout(() => render(), 1200);
-    } else {
-      st.textContent = `✗ ${d.error}`;
-      st.className = 'status err';
-    }
-  } catch(e) {
-    st.textContent = '✗ Ошибка сети';
-    st.className = 'status err';
-  }
-  setTimeout(() => { pb.classList.remove('show'); pf.style.width = '0%'; }, 1500);
+    if (!d.ok) { setStatus(key, '✗ ' + esc(d.error), 'err'); return; }
+    await load();
+    setStatus(d.profile.key, d.action === 'created'
+      ? `✓ Профиль «${esc(d.profile.name)}» создан — проверь поля и сохрани, если что-то поправил`
+      : '✓ Резюме обновлено', 'ok');
+    setStatus('new', '', '');
+  } catch (e) { setStatus(key, '✗ Ошибка сети', 'err'); }
 }
 
-render();
+async function save(key) {
+  const v = id => document.getElementById(`f-${id}-${key}`).value;
+  const body = { name: v('name'), label: v('label'), hh_resume_title: v('hh'),
+                 focus: v('focus'), searches: v('search') };
+  setStatus(key, '<span class="spinner"></span> Сохраняю…', 'loading');
+  const r = await fetch(`/api/profiles/${encodeURIComponent(key)}/update`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const d = await r.json();
+  if (!d.ok) { setStatus(key, '✗ ' + esc(d.error), 'err'); return; }
+  await load();
+  setStatus(key, '✓ Сохранено. Запросы поиска сработают со следующего поиска hh', 'ok');
+}
+
+async function makeDefault(key) {
+  await fetch(`/api/profiles/${encodeURIComponent(key)}/update`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ make_default: true }) });
+  load();
+}
+
+async function removeProfile(key) {
+  const p = PROFILES.find(x => x.key === key);
+  if (!confirm(`Удалить профиль «${p ? p.name : key}»? PDF уйдёт в архив, вакансии под этот профиль перестанут попадать в отклики.`)) return;
+  const r = await fetch(`/api/profiles/${encodeURIComponent(key)}/delete`, { method: 'POST' });
+  const d = await r.json();
+  if (!d.ok) { setStatus(key, '✗ ' + esc(d.error), 'err'); return; }
+  load();
+}
+
+async function checkRescore() {
+  try {
+    const d = await (await fetch('/api/profiles/rescore')).json();
+    const box = document.getElementById('rescore');
+    if (d.count > 0) {
+      document.getElementById('rescore-text').textContent =
+        `${d.count} свежих вакансий hh не оценены под все текущие профили. Переоценка обойдётся примерно в $${d.cost_usd}.`;
+      box.classList.add('show');
+    } else box.classList.remove('show');
+  } catch (e) {}
+}
+
+async function startRescore() {
+  const d = await (await fetch('/api/profiles/rescore', { method: 'POST' })).json();
+  document.getElementById('rescore-text').textContent = d.message;
+}
+
+load();
 </script>
 </body>
 </html>

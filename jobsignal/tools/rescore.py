@@ -13,7 +13,8 @@
     tools/rescore.py --profiles-changed --days 14 --limit 400 --apply
 
 --profiles-changed (23.10, смена профилей в config/profiles.yaml): берёт
-вакансии, у которых НЕТ оценок под действующими профилями, без оглядки на
+вакансии, у которых нет оценки хотя бы под один действующий профиль (профили
+сменили или добавили), без оглядки на
 старый балл — вакансия про лояльность под прежними PM-профилями получила
 30 и под фильтр «от 60» не попала бы. Черновик письма у таких вакансий
 стирается: он написан под снятый профиль и другое резюме.
@@ -73,9 +74,11 @@ def pick(session, limit: int, days: int, source: str | None,
     if profiles_changed:
         from jobsignal import profiles
         active = set(profiles.names())
+        # Нет оценки хотя бы под один действующий профиль: профили сменили
+        # или добавили новый. Вакансии без оценок вовсе возьмёт сам матчер.
         rows = [v for v in session.execute(q).scalars().all()
-                if v.match_scores and not any(m.profile_key in active
-                                              for m in v.match_scores)]
+                if v.match_scores
+                and not active <= {m.profile_key for m in v.match_scores}]
     else:
         rows = [v for v in session.execute(q).scalars().all()
                 if lo <= best(v) <= hi]
@@ -119,6 +122,25 @@ def main() -> int:
         if opts.source == "*":
             opts.source = None
 
+    # 26.10 переоценка с --apply стёрла оценки у 400 вакансий, а заново
+    # оценить не смогла: PDF новых профилей на сервере ещё не было, и матчер
+    # отказался работать без резюме. Проверяем ДО того, как что-то удалить.
+    from jobsignal.config import get_config
+    ready = get_config().profiles
+    if opts.apply and not ready:
+        print("ОСТАНОВЛЕНО: ни у одного профиля нет текста резюме (PDF в "
+              "config/resumes/ или cv_path) — оценивать нечем, оценки не трогаю. "
+              "Загрузи резюме в кабинете на странице «Резюме».")
+        return 1
+    if opts.apply:
+        from jobsignal import profiles as _profiles
+        missing = [p.name for p in _profiles.all_profiles()
+                   if p.name not in {r["name"] for r in ready}]
+        if missing:
+            print("ОСТАНОВЛЕНО: нет текста резюме у профилей: " + ", ".join(missing)
+                  + " — вакансии получили бы оценку не под все профили.")
+            return 1
+
     sf = get_session_factory()
     session = sf()
     vacs = pick(session, opts.limit, opts.days, opts.source,
@@ -128,7 +150,7 @@ def main() -> int:
               "--min-score")
         return 1
 
-    what = ("без оценок под действующими профилями" if opts.profiles_changed
+    what = ("не оценённые под все действующие профили" if opts.profiles_changed
             else f"балл {opts.min_score}-{opts.max_score}")
     print(f"выборка: {what}, за {opts.days} дней, источник {opts.source or 'любой'}\n")
     print(f"{'id':>6} {'балл':>5} {'пересказ':>9} {'полный текст':>13}  роль")

@@ -153,3 +153,102 @@ def focus_text() -> str:
     """На какие роли целимся — для оценки каналов и подсказок модели."""
     parts = [f"{p.name}: {p.focus}" if p.focus else p.name for p in all_profiles()]
     return "; ".join(parts)
+
+
+# ── правка профилей из кабинета ──────────────────────────────────────────────
+# Профили правятся на странице «Резюме»: загрузка PDF заводит профиль, его
+# можно переименовать, поправить запросы поиска и удалить. Пишем тот же
+# config/profiles.yaml (с копией прежней версии рядом), реестр перечитывает
+# его по времени изменения файла.
+
+FIELDS = ("key", "name", "label", "resume_path", "cv_path", "hh_resume_title",
+          "focus", "searches")
+
+
+def _as_dict(p: Profile) -> dict:
+    d = {"key": p.key, "name": p.name}
+    for f in FIELDS[2:]:
+        v = getattr(p, f)
+        if f == "searches":
+            v = list(v)
+        if v:
+            d[f] = v
+    return d
+
+
+def save(items: list[dict]) -> None:
+    """Записать профили. Порядок важен: первый — профиль по умолчанию."""
+    if not items:
+        raise ValueError("нужен хотя бы один профиль")
+    keys = [i["key"] for i in items]
+    if len(set(keys)) != len(keys):
+        raise ValueError("ключи профилей повторяются")
+    names = [i["name"] for i in items]
+    if len(set(names)) != len(names):
+        raise ValueError("имена профилей повторяются")
+    PROFILES_YAML.parent.mkdir(parents=True, exist_ok=True)
+    if PROFILES_YAML.exists():
+        PROFILES_YAML.with_suffix(".yaml.bak").write_text(
+            PROFILES_YAML.read_text(encoding="utf-8"), encoding="utf-8")
+    clean = [{k: i[k] for k in FIELDS if i.get(k)} for i in items]
+    body = yaml.safe_dump({"profiles": clean}, allow_unicode=True, sort_keys=False,
+                          width=100)
+    header = ("# Карьерные профили. Правятся в кабинете на странице «Резюме»;\n"
+              "# описание полей — в jobsignal/profiles.py. Первый профиль — по умолчанию.\n\n")
+    tmp = PROFILES_YAML.with_suffix(".yaml.tmp")
+    tmp.write_text(header + body, encoding="utf-8")
+    tmp.replace(PROFILES_YAML)
+    _load.cache_clear()
+
+
+def slug(text: str, taken: set[str]) -> str:
+    """Латинский ключ профиля из названия: имя файла резюме и ключ в базе."""
+    tr = {"а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
+          "ж": "zh", "з": "z", "и": "i", "й": "y", "к": "k", "л": "l", "м": "m",
+          "н": "n", "о": "o", "п": "p", "р": "r", "с": "s", "т": "t", "у": "u",
+          "ф": "f", "х": "h", "ц": "c", "ч": "ch", "ш": "sh", "щ": "sch", "ы": "y",
+          "э": "e", "ю": "yu", "я": "ya"}
+    import re
+    raw = "".join(tr.get(ch, ch) for ch in (text or "").lower())
+    base = re.sub(r"[^a-z0-9]+", "_", raw).strip("_")[:24].strip("_") or "profile"
+    key, n = base, 2
+    while key in taken:
+        key, n = f"{base}_{n}", n + 1
+    return key
+
+
+def add(item: dict) -> Profile:
+    items = [_as_dict(p) for p in all_profiles()]
+    items.append(item)
+    save(items)
+    return by_key(item["key"])
+
+
+def update(key: str, fields: dict) -> tuple[Profile, str | None]:
+    """Поправить профиль. Возвращает (профиль, прежнее имя, если сменилось)."""
+    items = [_as_dict(p) for p in all_profiles()]
+    old_name = None
+    for i in items:
+        if i["key"] == key:
+            for f in ("name", "label", "hh_resume_title", "focus", "searches", "cv_path"):
+                if f in fields:
+                    i[f] = fields[f]
+            if fields.get("name") and fields["name"] != by_key(key).name:
+                old_name = by_key(key).name
+            break
+    else:
+        raise KeyError(key)
+    if "make_default" in fields and fields["make_default"]:
+        items.sort(key=lambda i: i["key"] != key)
+    save(items)
+    return by_key(key), old_name
+
+
+def remove(key: str) -> Profile:
+    items = [_as_dict(p) for p in all_profiles()]
+    gone = by_key(key)
+    if gone is None:
+        raise KeyError(key)
+    rest = [i for i in items if i["key"] != key]
+    save(rest)
+    return gone

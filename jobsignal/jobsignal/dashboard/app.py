@@ -740,6 +740,250 @@ def api_resumes_download(key):
     return send_file(str(path), as_attachment=True, download_name=f"resume_{key}.pdf")
 
 
+# ── профили: загрузка резюме, правка, удаление ───────────────────────────────
+# Страница «Резюме» управляет профилями целиком: PDF заводит профиль (модель
+# сама называет его и подбирает запросы поиска), профиль можно поправить,
+# сделать основным и удалить. Пишется config/profiles.yaml (jobsignal/profiles.py).
+
+def _pdf_info(path) -> dict:
+    if path is None or not path.exists():
+        return {"exists": False}
+    st = path.stat()
+    return {"exists": True, "filename": path.name, "size_kb": round(st.st_size / 1024),
+            "updated": datetime.fromtimestamp(st.st_mtime).strftime("%d.%m.%Y %H:%M")}
+
+
+def _profile_json(p, i: int) -> dict:
+    return {"key": p.key, "name": p.name, "label": p.label,
+            "hh_resume_title": p.hh_resume_title, "focus": p.focus,
+            "searches": list(p.searches), "is_default": i == 0,
+            "pdf": _pdf_info(p.resume_pdf())}
+
+
+@app.route("/api/profiles")
+@_requires_auth
+def api_profiles():
+    from jobsignal import profiles as registry
+    return jsonify({"profiles": [_profile_json(p, i)
+                                 for i, p in enumerate(registry.all_profiles())]})
+
+
+@app.route("/api/profiles/upload", methods=["POST"])
+@_requires_auth
+def api_profiles_upload():
+    """PDF резюме: новый профиль (key пуст) или замена резюме у профиля key.
+
+    Новый профиль модель называет сама по тексту резюме и подбирает ему
+    запросы поиска. rederive=1 при замене — заново определить поля профиля
+    по новому резюме.
+    """
+    from jobsignal import profiles as registry
+    from jobsignal.agents.resume_parser import extract_text, parse_and_save
+    from jobsignal.profile_builder import derive
+
+    file = request.files.get("file")
+    if not file or not file.filename:
+        return jsonify({"ok": False, "error": "Файл не выбран"}), 400
+    if not file.filename.lower().endswith(".pdf"):
+        return jsonify({"ok": False, "error": "Нужен PDF"}), 400
+    key = (request.form.get("key") or "").strip()
+    rederive = request.form.get("rederive") == "1"
+
+    RESUME_DIR.mkdir(parents=True, exist_ok=True)
+    incoming = RESUME_DIR / "_incoming.pdf"
+    file.save(str(incoming))
+    try:
+        text = extract_text(str(incoming)).strip()
+        if len(text) < 300:
+            return jsonify({"ok": False, "error": "Из PDF не извлёкся текст — "
+                            "это скан или защищённый файл. Нужен PDF с текстом."}), 400
+        existing = registry.by_key(key) if key else None
+        if key and existing is None:
+            return jsonify({"ok": False, "error": f"Профиля {key} нет"}), 404
+        fields = None
+        if existing is None or rederive:
+            try:
+                fields = derive(text)
+            except Exception as exc:  # noqa: BLE001
+                return jsonify({"ok": False, "error": f"Не удалось разобрать резюме: {exc}"}), 502
+        if existing is None:
+            # Профиль с тем же именем уже есть, но без PDF (так бывает после
+            # переноса profiles.yaml на сервер) — резюме его и ждёт: прикрепляем,
+            # а не заводим дубль. Поля, заданные человеком, не трогаем.
+            same = registry.by_name(fields["name"])
+            if same is not None and same.resume_pdf() is None:
+                existing, key, fields = same, same.key, None
+        if existing is None:
+            taken = set(registry.keys())
+            names = set(registry.names())
+            if fields["name"] in names:
+                fields["name"] = f"{fields['name']} ({len(names) + 1})"
+            key = registry.slug(fields["name"], taken)
+            dest = RESUME_DIR / f"{key}.pdf"
+            incoming.replace(dest)
+            registry.add({"key": key, **fields,
+                          "resume_path": f"./config/resumes/{key}.pdf"})
+            action = "created"
+        else:
+            dest = RESUME_DIR / f"{key}.pdf"
+            if dest.exists():
+                dest.replace(RESUME_DIR / f"{key}_prev.pdf")
+            incoming.replace(dest)
+            if fields:
+                _apply_profile_update(key, fields)
+            action = "replaced"
+        parse_and_save(key)
+        idx = registry.keys().index(key)
+        log.info("[profiles] %s: %s (%s)", action, key, registry.by_key(key).name)
+        return jsonify({"ok": True, "action": action,
+                        "profile": _profile_json(registry.by_key(key), idx)})
+    finally:
+        if incoming.exists():
+            incoming.unlink()
+
+
+def _apply_profile_update(key: str, fields: dict):
+    """Поправить профиль; при смене имени перенести на новое имя оценки и
+    черновики, иначе вакансии выпали бы из очереди как оценённые под
+    «снятый» профиль."""
+    from jobsignal import profiles as registry
+    prof, old_name = registry.update(key, fields)
+    if old_name and old_name != prof.name:
+        session = _session()
+        try:
+            from sqlalchemy import text as _t
+            session.execute(_t("UPDATE match_scores SET profile_key=:new WHERE profile_key=:old"),
+                            {"new": prof.name, "old": old_name})
+            session.execute(_t("UPDATE vacancies SET draft_profile=:new WHERE draft_profile=:old"),
+                            {"new": prof.name, "old": old_name})
+            session.commit()
+        finally:
+            session.close()
+        log.info("[profiles] %s переименован: «%s» → «%s»", key, old_name, prof.name)
+    return prof
+
+
+@app.route("/api/profiles/<key>/update", methods=["POST"])
+@_requires_auth
+def api_profiles_update(key):
+    from jobsignal import profiles as registry
+    data = request.get_json() or {}
+    fields = {}
+    for f in ("name", "label", "hh_resume_title", "focus"):
+        if f in data:
+            fields[f] = str(data[f] or "").strip()
+    if "searches" in data:
+        raw = data["searches"]
+        items = raw if isinstance(raw, list) else str(raw).replace(",", "\n").splitlines()
+        fields["searches"] = [x.strip() for x in items if x and x.strip()][:15]
+    if data.get("make_default"):
+        fields["make_default"] = True
+    if "name" in fields and not fields["name"]:
+        return jsonify({"ok": False, "error": "Имя профиля не может быть пустым"}), 400
+    if registry.by_key(key) is None:
+        return jsonify({"ok": False, "error": f"Профиля {key} нет"}), 404
+    try:
+        prof = _apply_profile_update(key, fields)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "profile": _profile_json(prof, registry.keys().index(key))})
+
+
+@app.route("/api/profiles/<key>/delete", methods=["POST"])
+@_requires_auth
+def api_profiles_delete(key):
+    """Удалить профиль. PDF уходит в config/resumes/archive/, оценки в базе
+    остаются, но в очередь откликов больше не попадают."""
+    from jobsignal import profiles as registry
+    if registry.by_key(key) is None:
+        return jsonify({"ok": False, "error": f"Профиля {key} нет"}), 404
+    if len(registry.all_profiles()) <= 1:
+        return jsonify({"ok": False, "error": "Это последний профиль — без профилей "
+                        "оценивать вакансии не по чему. Сначала добавь другой."}), 400
+    gone = registry.remove(key)
+    pdf = RESUME_DIR / f"{key}.pdf"
+    if pdf.exists():
+        arch = RESUME_DIR / "archive"
+        arch.mkdir(parents=True, exist_ok=True)
+        pdf.replace(arch / f"{key}-{datetime.now():%Y%m%d-%H%M}.pdf")
+    log.info("[profiles] удалён %s (%s)", key, gone.name)
+    return jsonify({"ok": True})
+
+
+def _rescore_candidates(days: int = 14) -> int:
+    """Сколько свежих вакансий hh не оценены под все действующие профили."""
+    from jobsignal import profiles as registry
+    names = registry.names()
+    if not names:
+        return 0
+    session = _session()
+    try:
+        from sqlalchemy import text as _t
+        marks = ",".join(f":n{i}" for i in range(len(names)))
+        params = {f"n{i}": n for i, n in enumerate(names)}
+        params["days"] = f"-{days} days"
+        params["cnt"] = len(names)
+        return session.execute(_t(f"""
+            select count(*) from vacancies v
+             where v.is_primary = 1 and v.contact_type = 'hh'
+               and v.created_at > datetime('now', :days)
+               and exists (select 1 from match_scores m where m.vacancy_id = v.id)
+               and (select count(distinct m.profile_key) from match_scores m
+                     where m.vacancy_id = v.id and m.profile_key in ({marks})) < :cnt
+               and not exists (select 1 from applications a
+                                where a.vacancy_id = v.id and a.sent_at is not null)
+        """), params).scalar() or 0
+    finally:
+        session.close()
+
+
+@app.route("/api/profiles/rescore", methods=["GET", "POST"])
+@_requires_auth
+def api_profiles_rescore():
+    """GET — сколько вакансий за 14 дней надо переоценить и почём; POST —
+    запустить переоценку в фоне (tools/rescore.py --profiles-changed)."""
+    import fcntl
+    import subprocess
+    import sys
+    import threading
+
+    n = _rescore_candidates()
+    if request.method == "GET":
+        return jsonify({"count": n, "cost_usd": round(n * 0.006, 2)})
+    from jobsignal import profiles as registry
+    from jobsignal.config import get_config
+    if len(get_config().profiles) < len(registry.all_profiles()):
+        return jsonify({"ok": False, "message": "Не у всех профилей загружено резюме — "
+                        "переоценивать рано"})
+    if not n:
+        return jsonify({"ok": True, "message": "Переоценивать нечего: все свежие вакансии "
+                        "оценены под действующие профили"})
+    lock_path = os.environ.get("HH_LOCK_PATH", "/run/jobsignal-hh.lock")
+    try:
+        fh = open(lock_path, "w")
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.close()
+        return jsonify({"ok": False, "message": "Сейчас идёт прогон — попробуй через "
+                        "несколько минут"})
+
+    def _run():
+        base = str(Path(__file__).parent.parent.parent)
+        try:
+            subprocess.run([sys.executable, "tools/rescore.py", "--profiles-changed",
+                            "--days", "14", "--limit", str(min(n, 600)), "--apply"],
+                           cwd=base, timeout=3600, capture_output=True)
+        except Exception as exc:  # noqa: BLE001
+            log.error("rescore error: %s", exc)
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+            fh.close()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return jsonify({"ok": True, "message": f"Переоценка {min(n, 600)} вакансий запущена в "
+                    f"фоне, займёт 10-30 минут"})
+
+
 # ── pipeline trigger ──────────────────────────────────────────────────────────
 
 @app.route("/api/pipeline/run", methods=["POST"])
