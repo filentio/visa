@@ -104,6 +104,13 @@ class Vacancy(Base):
     is_primary = Column(Boolean, default=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     draft_text = Column(Text)
+    # Для чего написан черновик (jobsignal/letters.py): канал (hh, telegram,
+    # email, form), профиль и версия правил. Автоотклик переиспользует только
+    # черновик для hh под тот же профиль: 26.10 выяснилось, что он отправлял
+    # любой сохранённый текст, включая короткое сообщение для Telegram.
+    draft_channel = Column(String(16))
+    draft_profile = Column(String(128))
+    draft_version = Column(String(16))
     # contact_type: tg / hh / form / unknown
     contact_type = Column(String, default="unknown")
     # Исходный пост. Нужен матчеру: description это пересказ парсера в одну
@@ -245,6 +252,9 @@ def get_engine(url: str | None = None):
 # модель была верна только после того, как тот агент хоть раз отработает.
 _LATE_COLUMNS = (
     ("vacancies", "recruiter_email", "VARCHAR"),
+    ("vacancies", "draft_channel", "VARCHAR(16)"),
+    ("vacancies", "draft_profile", "VARCHAR(128)"),
+    ("vacancies", "draft_version", "VARCHAR(16)"),
 )
 
 

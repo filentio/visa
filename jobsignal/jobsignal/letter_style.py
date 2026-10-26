@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import re
 
-HUMAN_VOICE = """\
+_VOICE_TMPL = """\
 КАК ПИСАТЬ, ЧТОБЫ ЭТО ЗВУЧАЛО КАК ЧЕЛОВЕК, А НЕ КАК МОДЕЛЬ
 
 Главное правило: честность. Факты о кандидате, его цифры, компании и проекты
@@ -42,7 +42,7 @@ HUMAN_VOICE = """\
 живости: выдуманную деталь проверят на собеседовании.
 
 Объём и форма:
-- 500-800 знаков. Два-три коротких абзаца, между ними пустая строка.
+- {volume}
 - Один, максимум два результата из резюме. Выбирай те, что отвечают на их
   задачу. Остальное рекрутёр увидит в резюме, пересказывать его не нужно.
 - В одном предложении одна мысль. Если в предложении три цифры, это два
@@ -83,6 +83,16 @@ HUMAN_VOICE = """\
 - Без эмодзи, списков, жирного и markdown.
 """
 
+
+def voice_rules(min_chars: int = 500, max_chars: int = 800,
+                form: str = "Два-три коротких абзаца, между ними пустая строка.") -> str:
+    """Правила голоса с объёмом под канал: письмо к отклику на hh длиннее
+    сообщения рекрутёру в Telegram, а остальное у них общее."""
+    return _VOICE_TMPL.replace("{volume}", f"{min_chars}-{max_chars} знаков. {form}")
+
+
+HUMAN_VOICE = voice_rules()
+
 # Поверхностные маркеры, которые видно без модели. Структуру (вывод, порядок,
 # конкретику) так не проверить — это делает промпт; здесь только замер, чтобы
 # видеть, слушается ли модель.
@@ -98,9 +108,34 @@ _TELLS = (
     "не для галочки", "ищете человека", "ищут человека",
 )
 
+# Числа в письме, которых нет в источниках, почти всегда выдуманы: модель
+# «оживляет» письмо процентами. Проверяем числа от двух знаков и проценты:
+# однозначные («3 сервиса») в письмах обычно словами, а годы и суммы — длинные.
+_NUM_RE = re.compile(r"(?<![\w.,])(\d{1,3}(?:[ \u00a0\u202f]\d{3})+|\d+(?:[.,]\d+)?)\s*(%?)")
 
-def style_tells(text: str) -> list[str]:
-    """Найденные шаблонные маркеры. Пусто — значит поверхность чистая."""
+
+def _norm_num(raw: str) -> str:
+    return re.sub(r"[ \u00a0\u202f]", "", raw).replace(",", ".")
+
+
+def invented_numbers(text: str, *sources: str) -> list[str]:
+    """Числа из письма, которых нет ни в одном из источников (резюме, вакансия)."""
+    have = {_norm_num(m.group(1)) for src in sources
+            for m in _NUM_RE.finditer(src or "")}
+    out = []
+    for m in _NUM_RE.finditer(text or ""):
+        num, pct = _norm_num(m.group(1)), m.group(2)
+        if len(num.replace(".", "")) < 2 and not pct:
+            continue
+        if num not in have and (m.group(0).strip() not in out):
+            out.append(m.group(0).strip())
+    return out
+
+
+def style_tells(text: str, max_chars: int = 900) -> list[str]:
+    """Найденные шаблонные маркеры. Пусто — значит поверхность чистая.
+
+    max_chars — потолок длины с запасом над верхней границей канала."""
     low = (text or "").lower()
     found = [t.strip() for t in _TELLS if t in low]
     dashes = len(re.findall(r"\s—\s", text or ""))
@@ -108,6 +143,6 @@ def style_tells(text: str) -> list[str]:
         found.append(f"длинных тире: {dashes}")
     # Длина: правила просят 500-800 знаков. 900 — с запасом, чтобы не
     # гонять повтор из-за пары лишних слов.
-    if len((text or "").strip()) > 900:
+    if len((text or "").strip()) > max_chars:
         found.append(f"длинное: {len(text.strip())} знаков")
     return found

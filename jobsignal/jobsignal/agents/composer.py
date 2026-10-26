@@ -21,80 +21,27 @@ from .base import BaseAgent
 
 log = logging.getLogger("jobsignal")
 
-CV_CAP = 4000  # ограничение длины резюме в промпте (контроль токенов)
-
-# Базовые правила (общие для всех стилей)
-BASE_SYSTEM = (
-    "Ты пишешь КОРОТКОЕ сообщение рекрутёру в Telegram от первого лица (кандидат). "
-    "Ровно 3-4 строки. Всегда: короткое приветствие; кто я одной фразой; интерес к "
-    "конкретной роли и компании из вакансии; в конце — предложение со своей "
-    "стороны, а не просьба: что готов сделать дальше (созвониться в удобное "
-    "время, показать разбор похожей задачи). НЕ проси рекрутёра пересказать "
-    "вакансию («расскажете подробнее о задачах?») и не предлагай прислать "
-    "резюме — на hh.ru оно уходит вместе с откликом, а в телеграме прикладывается "
-    "к сообщению. "
-    "Возьми 2-3 ключевых слова из описания вакансии, чтобы попасть в запрос. "
-    "Тон деловой и живой, без канцелярита, штампов («доброго времени суток», "
-    "«заранее благодарен») и воды. НЕ выдумывай факты, цифры и места работы — "
-    "только из профиля кандидата. Даты работы бери из профиля буквально: "
-    "текущее место — то, у которого стоит «настоящее время», остальные "
-    "описывай в прошедшем времени и не называй их «последним местом» или "
-    "«текущим проектом». Без markdown, без темы письма, без подписи — "
-    "только готовый текст сообщения."
-)
-
-# Стили (тональность) — пользователь выбирает в дашборде
-STYLES: dict[str, dict] = {
-    "metric": {
-        "label": "Метрика-крючок",
-        "hint": "АКЦЕНТ: сразу после представления дай ОДНУ самую сильную измеримую "
-                "метрику-достижение из профиля как крючок.",
-    },
-    "fit": {
-        "label": "Под запрос вакансии",
-        "hint": "АКЦЕНТ: подчеркни точное попадание в требования — назови 2-3 совпадения "
-                "опыта/навыков кандидата с описанием роли.",
-    },
-    "builder": {
-        "label": "Хендз-он билдер",
-        "hint": "АКЦЕНТ: упор на технический бэкграунд и умение самому собирать MVP на "
-                "LLM/RAG/агентах (Cursor, Claude) и скорость проверки гипотез.",
-    },
-    "fintech": {
-        "label": "Финтех / масштаб",
-        "hint": "АКЦЕНТ: упор на доменный опыт в финтехе и масштаб — портфель инициатив, "
-                "размер команды, бизнес-метрики (LTV, P&L).",
-    },
-}
-DEFAULT_STYLE = "metric"
+# Правила и построение письма — в jobsignal/letters.py, общем для всего
+# проекта. Здесь был свой промпт («ровно 3-4 строки») и свои стили, и письма из
+# карточек Telegram отличались от писем кабинета и автоотклика (26.10).
+from jobsignal.letters import ACCENTS as STYLES  # noqa: E402 — имя для старых вызовов
+DEFAULT_STYLE = "auto"
 
 
-def _system_for(style: str) -> str:
-    from ..letter_style import HUMAN_VOICE
-    st = STYLES.get(style) or STYLES[DEFAULT_STYLE]
-    return BASE_SYSTEM + "\n\n" + st["hint"] + "\n\n" + HUMAN_VOICE
-
-
-def generate_draft(vacancy: Vacancy, profile_name: str, cv_text: str, model: str,
-                   style: str = DEFAULT_STYLE) -> str:
-    # Полный текст поста, а не пересказ парсера: description — одна фраза, и
-    # зацепиться в письме за их конкретную задачу было не за что.
+def generate_draft(vacancy: Vacancy, profile_name: str, cv_text: str = "", model: str = "",
+                   style: str = DEFAULT_STYLE, channel: str = "telegram") -> str:
+    """Черновик через единый сервис писем. cv_text и model больше не нужны:
+    резюме и модель сервис берёт сам. Пустое письмо — исключение, чтобы
+    вызывающий не сохранил и не отправил пустоту."""
+    from jobsignal import letters
     raw = getattr(vacancy, "raw_post", None)
-    body = ((raw.text if raw is not None else "") or vacancy.description or "—")
-    user = (
-        f"ВАКАНСИЯ\nРоль: {vacancy.role or '—'}\n"
-        f"Компания: {vacancy.company or '—'}\n"
-        f"Описание: {body.strip()[:2500]}\n\n"
-        f"МОЙ ПРОФИЛЬ — {profile_name}:\n{cv_text[:CV_CAP]}"
-    )
-    # max_tokens — предохранитель от обрыва, а не бюджет: платим за реально
-    # сгенерированные токены, поэтому запас ничего не стоит. На 400 обрывов
-    # ещё не было (11 писем в базе: 148-326 симв.), но кириллица идёт ~1 символ
-    # на токен, и потолок был в паре десятков токенов от самого длинного
-    # письма. Длину держит промпт («ровно 3-4 строки»), а не лимит —
-    # поднимаем до 2000, как в notify_bot, чтобы убрать риск совсем.
-    return complete_text(_system_for(style), user, model=model, max_tokens=2000,
-                         tag=f"vac#{vacancy.id}", cache_system=True).strip()
+    body = ((raw.text if raw is not None else "") or vacancy.description or "")
+    letter = letters.generate(vacancy.role or "", vacancy.company or "", body,
+                              profile=profile_name or None, channel=channel,
+                              accent=style)
+    if not letter.text:
+        raise LLMError("; ".join(letter.issues) or "письмо не получено")
+    return letter.text
 
 
 def best_profile_name(v: Vacancy) -> str | None:
@@ -118,9 +65,7 @@ class ComposerAgent(BaseAgent):
     def run(self, limit: int | None = None, style: str = DEFAULT_STYLE) -> dict:
         Session = get_session_factory()
         cfg = self.config
-        model = cfg.settings.anthropic_model
         limit = limit or getattr(cfg.settings, "compose_batch_limit", 20)
-        cvmap = {p["name"]: p["cv_text"] for p in cfg.profiles}
 
         made = errors = skipped_mass = 0
         with Session() as s:
@@ -146,9 +91,8 @@ class ComposerAgent(BaseAgent):
                     skipped_mass += 1
                     continue
                 pname = best_profile_name(v)
-                cv = cvmap.get(pname, "")
                 try:
-                    text = generate_draft(v, pname or "", cv, model, style=style)
+                    text = generate_draft(v, pname or "", style=style)
                 except LLMError as exc:
                     log.warning("[composer] вакансия #%d: %s", v.id, exc)
                     errors += 1
@@ -170,36 +114,8 @@ class ComposerAgent(BaseAgent):
 
 
 class Composer:
-    def generate(self, vacancy, style: str = "metric_hook") -> str:
-        from jobsignal import profiles
-        active = set(profiles.names())
-        best_profile = profiles.default_name()
-        best_score = 0
-        for sc in (getattr(vacancy, 'match_scores', None) or []):
-            score = sc.score if hasattr(sc, 'score') else sc.get('score', 0)
-            prof = sc.profile_key if hasattr(sc, 'profile_key') else sc.get('profile_key', '')
-            if prof in active and (score or 0) > best_score:
-                best_score = score
-                best_profile = prof
-        # Резюме берём из конфига, как это делает run() в этом же классе.
-        # Раньше здесь был свой путь pathlib.Path("config")/f"cv_{key}.md" с
-        # ручным profile_map, и две беды сразу: путь относительный (при другом
-        # рабочем каталоге файла нет), а профиль вне карты схлопывался в "pm".
-        # В обоих случаях cv_text молча становился пустой строкой — и модель,
-        # которой промпт запрещает выдумывать факты, всё равно была вынуждена
-        # их выдумать. Письмо рекрутёру с несуществующим опытом хуже, чем
-        # отсутствие письма, поэтому пустое резюме теперь ошибка.
-        from ..config import get_config
-        cfg = get_config()
-        cvmap = {p["name"]: p["cv_text"] for p in cfg.profiles}
-        cv_text = cvmap.get(best_profile) or ""
-        if not cv_text.strip():
-            raise ValueError(
-                f"нет текста резюме для профиля {best_profile!r} "
-                f"(есть: {', '.join(cvmap) or 'ни одного'}) — "
-                f"проверь config/profiles.yaml")
-        # Раньше здесь бралось GIGACHAT_MODEL (по умолчанию "GigaChat") — у
-        # Anthropic это 404 not_found_error, и кнопка «сгенерировать письмо» в
-        # дашборде падала. Письмо — качество важнее цены, поэтому основная модель.
-        model = cfg.settings.anthropic_model
-        return generate_draft(vacancy, best_profile, cv_text, model, style=style)
+    """Письмо под вакансию для Telegram (карточки отклика, run.py compose)."""
+
+    def generate(self, vacancy, style: str = DEFAULT_STYLE) -> str:
+        profile = best_profile_name(vacancy)
+        return generate_draft(vacancy, profile or "", style=style, channel="telegram")

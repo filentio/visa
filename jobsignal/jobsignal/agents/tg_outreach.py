@@ -48,7 +48,7 @@ class TGOutreachAgent:
     name = "tg_outreach"
 
     def run(self, limit: int | None = None) -> dict:
-        from jobsignal.agents.composer import Composer
+        from jobsignal.agents.composer import Composer, best_profile_name
         from jobsignal.agents.notify_bot import _send
 
         batch = limit or BATCH
@@ -144,7 +144,10 @@ class TGOutreachAgent:
                     s.add(Application(vacancy_id=v.id, message_text=letter,
                                       channel="telegram", is_draft=True,
                                       created_at=utcnow()))
-                v.draft_text = letter
+                from jobsignal import letters
+                letters.remember(v, letters.Letter(
+                    letter, "telegram",
+                    best_profile_name(v) or "", letters.DEFAULT_ACCENT))
                 v.status = VacancyStatus.drafted
                 offered += 1
             s.commit()

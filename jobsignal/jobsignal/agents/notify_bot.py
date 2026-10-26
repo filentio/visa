@@ -116,20 +116,6 @@ def _best_profile(conn: sqlite3.Connection, vid: int) -> tuple[str, int, str]:
     return profiles.default_name(), 0, ""
 
 
-def _get_active_template() -> dict | None:
-    """Get active cover letter template from DB."""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
-        row = conn.execute(
-            "SELECT * FROM cover_templates WHERE is_active=1 LIMIT 1"
-        ).fetchone()
-        conn.close()
-        return dict(row) if row else None
-    except Exception:
-        return None
-
-
 def _vacancy_text_by_id(vid: int | None) -> str:
     """Полный текст вакансии по её номеру: исходный пост, иначе пересказ."""
     if not vid:
@@ -148,110 +134,27 @@ def _vacancy_text_by_id(vid: int | None) -> str:
 
 
 def _cover_text(role: str, company: str, profile_key: str, recruiter_name: str = "",
-                vacancy_text: str = "", vacancy_id: int | None = None) -> str:
-    """Generate cover letter using active template + real resume text. No hallucinations.
+                vacancy_text: str = "", vacancy_id: int | None = None,
+                channel: str = "hh", accent: str | None = None) -> str:
+    """Письмо через единый сервис jobsignal/letters.py. Пустая строка — письма нет.
 
-    vacancy_text — текст самой вакансии. Раньше модель получала только
-    название роли и компанию, и письмо не могло зацепиться ни за одну
-    конкретную задачу: отсюда безличные письма, которые подходят к любой
-    вакансии и потому не подходят ни к одной.
+    Обёртка оставлена ради вызывающих (бот, кабинет, автоотклик, утилиты).
+    Раньше здесь был свой промпт, а поверх него шаблон из таблицы
+    cover_templates; теперь правила одни для всех путей, см. letters.py.
+    Заглушку «Заинтересовала вакансия… Прилагаю резюме» при сбое больше не
+    возвращаем: вызывающий должен видеть, что письма нет, а не отправить
+    две строки.
     """
-    from jobsignal.letter_style import HUMAN_VOICE, style_tells
+    from jobsignal import letters
 
-    # Текст вакансии по номеру, если вызывающий его не передал. Раньше кнопки
-    # дашборда и бота вызывали генератор без текста, письмо писалось по одному
-    # названию роли, сохранялось в draft_text — и автоотклик отправлял именно
-    # его, а не письмо по вакансии.
+    # Текст вакансии по номеру, если вызывающий его не передал: письмо по
+    # одному названию роли безлико и подходит к любой вакансии.
     if not (vacancy_text or "").strip() and vacancy_id:
         vacancy_text = _vacancy_text_by_id(vacancy_id)
-    from jobsignal.agents.resume_parser import get_resume_text
-    from jobsignal.config import get_config
-    from jobsignal.llm import complete_text
-
-    resume_key = _resume_key(profile_key)
-    resume_text = get_resume_text(resume_key)
-
-    if not resume_text:
-        from jobsignal.agents.resume_parser import parse_and_save
-        result = parse_and_save(resume_key)
-        if result.get("ok"):
-            resume_text = get_resume_text(resume_key)
-
-    company_part = f" в {company}" if company and company not in ("—", "None", "") else ""
-    name_part = f", {recruiter_name}" if recruiter_name else ""
-
-    if not resume_text:
-        return f"Добрый день{name_part}\n\nЗаинтересовала вакансия {role}{company_part}. Прилагаю резюме — готов обсудить."
-
-    # get active template
-    tpl = _get_active_template()
-    system_prompt = (
-        tpl["system_prompt"] if tpl and tpl.get("system_prompt")
-        else (
-            "Напиши короткое сопроводительное письмо (5-7 предложений). "
-            "Используй ТОЛЬКО факты из резюме, никаких выдуманных цифр и компаний. "
-            "Стиль: деловой, живой, как человек пишет человеку. "
-            "Приветствие, затем сразу то, что связывает кандидата с этой "
-            "вакансией: один-два результата из резюме, которые отвечают на "
-            "их задачу, с названиями компаний. В конце: что готов показать "
-            "или обсудить."
-        )
-    )
-    # Правила голоса добавляются ПОВЕРХ любого промпта, включая шаблон из
-    # дашборда: шаблон задаёт содержание, а голос у всех писем один.
-    system_prompt = system_prompt + "\n\n" + HUMAN_VOICE
-
-    from jobsignal import profiles as _profiles
-    _prof = _profiles.resolve(profile_key)
-    profile_label = _prof.letter_label if _prof else profile_key
-    # Списка компаний в промпте нет умышленно: он был захардкожен и перебивал
-    # резюме — обновление мест работы никуда не доходило, а закрытое место
-    # продолжало выглядеть текущим. Места работы модель берёт из текста ниже.
-    user = (
-        f"Вакансия: {role}{company_part}\n"
-        f"Имя рекрутёра: {recruiter_name or 'неизвестно'}\n"
-        f"Профиль кандидата: {profile_label}\n\n"
-        + (f"Текст вакансии:\n{vacancy_text.strip()[:2500]}\n\n"
-           if vacancy_text and vacancy_text.strip() else "")
-        + f"Резюме кандидата:\n{resume_text[:7500]}\n\n"
-        f"Напиши сопроводительное письмо. "
-        f"Начни с \'Добрый день{name_part}\'. "
-        f"Факты о кандидате только из резюме. Из текста вакансии бери "
-        f"только их задачу, за которую зацепиться, и не приписывай "
-        f"кандидату её требования."
-    )
-
-    try:
-        # Модель обязательна: с пустой строкой Anthropic отвечает 400
-        # ("model: String should have at least 1 character"), и письмо молча
-        # подменялось заглушкой на 2 строки. Берём модель из конфига.
-        model = get_config().settings.anthropic_model
-        # Кириллица дорога по токенам (~1 символ на токен): на 350-1200
-        # письмо обрывалось на полуслове, 2000 хватает на 5-7 предложений.
-        text = complete_text(system_prompt, user, model, 2000,
-                             cache_system=True).strip()
-        tells = style_tells(text)
-        # Одна повторная попытка, если письмо вышло длинным или с тире: 14.10
-        # все три пробных письма были по ~1000 знаков и с тремя тире, хотя
-        # правила это запрещали. Повтор обходится в один вызов и только тогда,
-        # когда есть что чинить; дальше берём лучшее из двух.
-        if tells:
-            retry = complete_text(
-                system_prompt,
-                user + "\n\nПредыдущий вариант не подошёл: " + "; ".join(tells)
-                + ". Перепиши короче, без длинных тире.",
-                model, 2000, cache_system=True).strip()
-            retry_tells = style_tells(retry)
-            if len(retry_tells) <= len(tells):
-                text, tells = retry, retry_tells
-        # Замер, а не фильтр: видно, слушается ли модель правил голоса.
-        if tells:
-            log.info("[notify] письмо: остались шаблонные маркеры — %s",
-                     ", ".join(tells))
-        return text
-    except Exception as e:
-        log.warning("[notify] cover LLM error: %s", e)
-        return f"Добрый день{name_part}\n\nЗаинтересовала вакансия {role}{company_part}. Прилагаю резюме — готов обсудить."
+    letter = letters.generate(role, company, vacancy_text, profile=profile_key,
+                              channel=channel, accent=accent,
+                              recruiter_name=recruiter_name)
+    return letter.text
 
 
 class NotifyBot:
@@ -337,8 +240,11 @@ class NotifyBot:
             _send(text, markup)
 
             # second message: forward-ready with resume
-            cover = _cover_text(role, company, profile_key, vacancy_id=vid)
-            caption = f"👇 <i>Перешли это сообщение рекрутёру</i>\n\n{_esc(cover)}"
+            cover = _cover_text(role, company, profile_key, vacancy_id=vid,
+                                channel="telegram")
+            caption = (f"👇 <i>Перешли это сообщение рекрутёру</i>\n\n{_esc(cover)}"
+                       if cover else "⚠️ Письмо не получилось (модель не ответила "
+                       "или нет резюме профиля) — резюме прикладываю без текста")
             from jobsignal.agents.resume_parser import pdf_path_for
             resume_path = pdf_path_for(_resume_key(profile_key))
 
@@ -464,15 +370,19 @@ class NotifyBot:
 
         conn = sqlite3.connect(DB_PATH)
         row = conn.execute(
-            "SELECT role, company FROM vacancies WHERE id=?", (vid,)
+            "SELECT role, company, contact_type FROM vacancies WHERE id=?", (vid,)
         ).fetchone()
         conn.close()
 
         if not row:
             return
 
-        role, company = row
-        cover = _cover_text(role or "", company or "", profile_key, vacancy_id=vid)
+        role, company, ct = row
+        # Канал по контакту вакансии: правила письма для hh, анкеты и почты разные.
+        channel = {"hh": "hh", "form": "form", "email": "email",
+                   "tg": "telegram"}.get(ct or "", "hh")
+        cover = _cover_text(role or "", company or "", profile_key, vacancy_id=vid,
+                            channel=channel) or "Письмо не получилось — попробуй ещё раз."
 
         msg = (
             f"📋 <b>Сопроводительное письмо</b>\n\n"

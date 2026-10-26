@@ -683,59 +683,51 @@ class HHApplyAgent(BaseAgent):
     # --- письмо -----------------------------------------------------------
 
     def _letter(self, session, item: dict) -> str:
-        """Письмо из Vacancy.draft_text; если пусто или непригодно — генерим тем
-        же composer'ом, что и кнопка в дашборде, и сохраняем в draft_text.
+        """Письмо к отклику на hh через единый сервис jobsignal/letters.py.
 
-        ЗАЩИТА ОТ ДЕФЕКТА №4. Раньше draft_text брался как есть. Composer при
-        сбое модели молча возвращает заглушку на две строки («Прилагаю резюме —
-        готов обсудить»); она попадала в draft_text и после этого вакансия
-        браковалась НАВСЕГДА: письмо непригодно, а перегенерации не было.
-        Поэтому непригодный черновик считаем отсутствующим, генерацию повторяем
-        LETTER_TRIES раз и сохраняем результат только если он прошёл проверку.
+        Черновик вакансии берём, только если он написан ДЛЯ hh, под этот же
+        профиль и по действующим правилам (letters.reusable). До 26.10 брался
+        любой draft_text, прошедший проверку на обрыв: короткое сообщение для
+        Telegram или письмо под снятый профиль уходили в отклик на hh.
+
+        ЗАЩИТА ОТ ДЕФЕКТА №4 сохраняется: непригодный текст не сохраняем,
+        генерацию повторяем LETTER_TRIES раз.
         """
-        draft = item["draft"]
-        if draft and letter_problem(draft) is None:
-            return draft
-
-        # Единственная точка генерации в проекте — общая с дашбордом.
-        from .notify_bot import _cover_text
+        from jobsignal import letters, profiles
 
         v = session.get(Vacancy, item["id"])
-        from jobsignal import profiles
         prof = profiles.resolve(item["profile"])
         profile = prof.name if prof else item["profile"]
-        # Полный текст вакансии, а не пересказ парсера: письмо должно
-        # зацепиться за их конкретную задачу, а пересказ — одна фраза.
+        draft = letters.reusable(v, "hh", profile)
+        if draft:
+            return draft
+
+        # Полный текст вакансии, а не пересказ парсера.
         vac_text = ((v.raw_post.text if v.raw_post is not None else "")
                     or v.description or "")
-        text = ""
+        letter = None
         for try_no in range(1, LETTER_TRIES + 1):
-            text = (_cover_text(
-                role=v.role or "",
-                company=v.company or "",
-                profile_key=profile,
-                recruiter_name="",
-                vacancy_text=vac_text,
-            ) or "").strip()
-            problem = letter_problem(text)
-            if problem is None:
+            letter = letters.generate(v.role or "", v.company or "", vac_text,
+                                      profile=profile, channel="hh")
+            if letter.ok:
                 break
-            log.warning(
-                "[hh_apply] #%s: письмо не годится (попытка %d/%d): %s",
-                v.id, try_no, LETTER_TRIES, problem,
-            )
+            log.warning("[hh_apply] #%s: письмо не годится (попытка %d/%d): %s",
+                        v.id, try_no, LETTER_TRIES,
+                        letter_problem(letter.text) or "; ".join(letter.issues))
         else:
             # Непригодный текст в draft_text не пишем — иначе следующий прогон
             # снова упрётся в него вместо новой генерации.
-            return text or draft
+            return letter.text if letter else ""
 
-        v.draft_text = text
+        letters.remember(v, letter)
         if v.status == VacancyStatus.matched:
             v.status = VacancyStatus.drafted
         session.commit()
-        item["draft"] = text
-        log.info("[hh_apply] #%s: письмо сгенерировано (%d симв.)", v.id, len(text))
-        return text
+        item["draft"] = letter.text
+        log.info("[hh_apply] #%s: письмо сгенерировано (%d симв.)%s", v.id,
+                 len(letter.text),
+                 f"; замечания: {'; '.join(letter.issues)}" if letter.issues else "")
+        return letter.text
 
     # --- запись результата ------------------------------------------------
 

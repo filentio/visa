@@ -248,13 +248,10 @@ nav{flex-wrap:wrap;row-gap:8px;}
 </div>
 
 <script>
+// Акценты письма приходят с сервера (jobsignal/letters.py ACCENTS): раньше
+// подписи здесь не совпадали с ключами сервера, и выбор ни на что не влиял.
 const STYLES = {{ styles|tojson }};
-const STYLE_LABELS = {
-  metric_hook: 'Метрика',
-  match_request: 'Под запрос',
-  hands_on: 'Хендз-он',
-  fintech: 'Финтех'
-};
+const STYLE_LABELS = {{ style_labels|tojson }};
 let queueMode = true;
 let _deb = null;
 let _newCandidates = 0;
@@ -557,7 +554,7 @@ async function generateDraft(id){
   try{
     const r=await fetch('/api/generate_draft',{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({vacancy_id:id,style:sty?.value||'metric_hook'})
+      body:JSON.stringify({vacancy_id:id,style:sty?.value||'auto'})
     });
     const d=await r.json();
     if(d.draft){

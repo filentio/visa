@@ -20,7 +20,7 @@ from jobsignal.db import (
     Application, Channel, ChannelCandidate
 )
 from jobsignal.agents.outreach import detect_contact_type, get_outreach_data
-from jobsignal.agents.composer import Composer, STYLES
+from jobsignal.letters import ACCENTS as STYLES
 from jobsignal.config import OutreachMode
 from jobsignal.ratelimit import rate_status
 
@@ -211,6 +211,7 @@ def index():
         from jobsignal import profiles as registry
         profiles = {n: n for n in registry.names()}
     return render_template("index.html", styles=list(STYLES.keys()),
+                           style_labels={k: v["label"] for k, v in STYLES.items()},
                            profiles=profiles, outreach_mode=_outreach_mode())
 
 
@@ -319,10 +320,20 @@ def api_stats():
     })
 
 
+def _letter_channel(v) -> str:
+    """Канал письма по контакту вакансии (правила письма у каналов разные)."""
+    ct = v.contact_type or detect_contact_type(v)
+    return {"hh": "hh", "tg": "telegram", "form": "form", "email": "email",
+            "linkedin": "email"}.get(ct, "hh")
+
+
 @app.route("/api/generate_draft", methods=["POST"])
 @_requires_auth
 def api_generate_draft():
-    data = request.get_json()
+    """Письмо по кнопке «Сгенерировать» — тем же сервисом, что автоотклик и
+    бот (jobsignal/letters.py), с выбранным акцентом и правилами канала."""
+    from jobsignal import letters
+    data = request.get_json() or {}
     vid = data.get("vacancy_id")
     session = _session()
     from sqlalchemy.orm import joinedload
@@ -331,28 +342,19 @@ def api_generate_draft():
         session.close()
         return jsonify({"error": "not found"}), 404
     try:
-        # determine best profile
-        best_score, best_profile = _best_score(v)
-        if not best_profile:
-            from jobsignal import profiles as registry
-            best_profile = registry.default_name()
-        # use unified cover generator from notify_bot
-        from jobsignal.agents.notify_bot import _cover_text
-        text = _cover_text(
-            role=v.role or "",
-            company=v.company or "",
-            profile_key=best_profile,
-            recruiter_name="",
-            vacancy_id=v.id,
-        )
-        if not text:
-            raise ValueError("пустой ответ модели")
-        v.draft_text = text
+        _, best_profile = _best_score(v)
+        letter = letters.for_vacancy(v.id, channel=_letter_channel(v),
+                                     accent=data.get("style"),
+                                     profile=best_profile or None)
+        if not letter.text:
+            raise ValueError("; ".join(letter.issues) or "пустой ответ модели")
+        letters.remember(v, letter)
         if v.status == VacancyStatus.matched:
             v.status = VacancyStatus.drafted
         session.commit()
         session.close()
-        return jsonify({"draft": text})
+        return jsonify({"draft": letter.text, "channel": letter.channel,
+                        "profile": letter.profile, "issues": letter.issues})
     except Exception as exc:
         session.rollback()
         session.close()
@@ -370,19 +372,19 @@ def api_outreach_data(vid):
         session.close()
         return jsonify({"error": "not found"}), 404
     _, best_profile = _best_score(v)
+    from jobsignal import letters
     from jobsignal import profiles as registry
-    from jobsignal.agents.hh_apply import letter_problem
     profile_name = best_profile or registry.default_name()
-    # Письмо то же, что уходит в автоотклике и боте: по резюме профиля и
-    # тексту вакансии. Готовый черновик берём, если он годен; иначе пишем
-    # и сохраняем, чтобы повторное открытие не стоило нового вызова модели.
-    cover = (v.draft_text or "").strip()
-    if not cover or letter_problem(cover) is not None:
-        from jobsignal.agents.notify_bot import _cover_text
-        cover = _cover_text(v.role or "", v.company or "", profile_name,
-                            vacancy_id=v.id)
-        if cover and letter_problem(cover) is None:
-            v.draft_text = cover
+    channel = _letter_channel(v)
+    # Письмо то же, что уходит в автоотклике и боте. Черновик берём, только
+    # если он написан для этого канала и профиля по действующим правилам;
+    # иначе пишем и запоминаем, чтобы повторное открытие не стоило вызова.
+    cover = letters.reusable(v, channel, profile_name)
+    if not cover:
+        letter = letters.for_vacancy(v.id, channel=channel, profile=profile_name)
+        cover = letter.text
+        if letter.ok:
+            letters.remember(v, letter)
             session.commit()
     data = get_outreach_data(v, profile_name, cover_text=cover or None)
     session.close()
