@@ -37,7 +37,7 @@ log = logging.getLogger("jobsignal")
 
 # Меняется при любой правке правил ниже: старые черновики после этого не
 # переиспользуются автоотправкой.
-LETTER_VERSION = "2026-10-26"
+LETTER_VERSION = "2026-10-26c"
 
 VAC_CAP = 3000      # текст вакансии: требования почти всегда в начале
 RESUME_CAP = 8000   # резюме целиком: новые резюме 6700-7400 знаков
@@ -45,7 +45,7 @@ RESUME_CAP = 8000   # резюме целиком: новые резюме 6700-
 CHANNELS: dict[str, dict] = {
     "hh": {
         "label": "сопроводительное письмо к отклику на hh.ru",
-        "min": 500, "max": 800, "ceil": 950,
+        "min": 500, "max": 800, "ceil": 850,
         "form": "Два-три коротких абзаца, между ними пустая строка.",
         "notes": ("Резюме уже приложено к отклику: не предлагай его прислать "
                   "и не пересказывай. Начни с «Добрый день» (с именем, если "
@@ -53,7 +53,7 @@ CHANNELS: dict[str, dict] = {
     },
     "telegram": {
         "label": "первое сообщение рекрутёру в личку Telegram",
-        "min": 300, "max": 550, "ceil": 650,
+        "min": 300, "max": 550, "ceil": 600,
         "form": "Три-пять коротких строк, без длинных абзацев.",
         "notes": ("PDF резюме приложен к сообщению: не предлагай его прислать. "
                   "Начни с короткого приветствия (с именем, если известно). "
@@ -62,14 +62,14 @@ CHANNELS: dict[str, dict] = {
     },
     "email": {
         "label": "письмо рекрутёру на почту",
-        "min": 500, "max": 900, "ceil": 1050,
+        "min": 500, "max": 900, "ceil": 950,
         "form": "Два-три коротких абзаца, между ними пустая строка.",
         "notes": ("Резюме приложено к письму. Без темы письма и без подписи: "
                   "их добавят отдельно."),
     },
     "form": {
         "label": "текст в поле «сопроводительное письмо / о себе» анкеты на сайте компании",
-        "min": 300, "max": 600, "ceil": 700,
+        "min": 300, "max": 600, "ceil": 650,
         "form": "Один-два коротких абзаца.",
         "notes": "Без приветствия по имени: кто прочтёт анкету, неизвестно.",
     },
@@ -158,7 +158,51 @@ def _resume_text(profile_key: str) -> str:
     return text or ""
 
 
-def review(text: str, channel: str, resume: str, vacancy_text: str) -> list[str]:
+FACT_SYSTEM = (
+    "Ты проверяешь сопроводительное письмо кандидата на соответствие его "
+    "резюме. Найди в письме утверждения О КАНДИДАТЕ, которых нет в резюме "
+    "или которые искажают резюме: навыки, инструменты, методики, роли, "
+    "компании, домены, масштаб, сроки и цифры (в том числе «15+» вместо 15, "
+    "«10-15 минут» вместо 15, «рекомендательная система» вместо «система "
+    "подбора»). Особенно ищи требования вакансии, приписанные кандидату. "
+    "Пересказ своими словами без изменения смысла — не ошибка. Утверждения о "
+    "вакансии и компании не проверяй.\n\n"
+    "Отвечай строго одним JSON без markdown: "
+    '{"unsupported": ["<цитата из письма> — <что в резюме на самом деле>"]}. '
+    "Если всё подтверждается, верни пустой список."
+)
+
+
+def fact_check(text: str, resume: str, vacancy_text: str = "") -> list[str]:
+    """Утверждения о кандидате, которых нет в резюме. Дешёвая модель разбора.
+
+    Проверка цифр (invented_numbers) ловит только выдуманные числа. 26.10 в
+    письмах нашлись «user story, UML» (UML в резюме нет, это требование
+    вакансии), «15+ инициатив» (в резюме 15) и «до 10-15 минут» (в резюме
+    15): числа такие в резюме встречаются, а смысл искажён.
+    Отключается LETTER_FACT_CHECK=0. Сбой проверки письмо не блокирует.
+    """
+    import os
+    if os.environ.get("LETTER_FACT_CHECK", "1") == "0":
+        return []
+    from jobsignal.config import get_config
+    from jobsignal.llm import complete_json
+    user = (f"РЕЗЮМЕ КАНДИДАТА:\n{resume[:RESUME_CAP]}\n\n"
+            + (f"ТЕКСТ ВАКАНСИИ (для понимания, что из неё могли приписать):\n"
+               f"{vacancy_text.strip()[:1500]}\n\n" if (vacancy_text or "").strip() else "")
+            + f"ПИСЬМО:\n{text}")
+    try:
+        data = complete_json(FACT_SYSTEM, user, model=get_config().settings.parser_model,
+                             max_tokens=700, tag="letter_facts", cache_system=True)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[letters] проверка фактов не выполнилась: %s", exc)
+        return []
+    items = data.get("unsupported") or []
+    return [str(x)[:200] for x in items if str(x).strip()][:6]
+
+
+def review(text: str, channel: str, resume: str, vacancy_text: str,
+           facts: bool = True) -> list[str]:
     """Замечания к письму. Пусто — письмо чистое."""
     from jobsignal.agents.hh_apply import letter_problem
     from jobsignal.letter_style import invented_numbers, style_tells
@@ -173,6 +217,9 @@ def review(text: str, channel: str, resume: str, vacancy_text: str) -> list[str]
     nums = invented_numbers(text, resume, vacancy_text)
     if nums:
         issues.append("числа, которых нет ни в резюме, ни в вакансии: " + ", ".join(nums))
+    if facts and not problem:
+        for item in fact_check(text, resume, vacancy_text):
+            issues.append("нет в резюме: " + item)
     return issues
 
 
@@ -202,7 +249,8 @@ def generate(role: str, company: str, vacancy_text: str, profile: str | None = N
            if (vacancy_text or "").strip() else "")
         + f"Резюме кандидата:\n{resume[:RESUME_CAP]}\n\n"
         "Напиши письмо. Факты о кандидате только из резюме. Из текста вакансии "
-        "бери только их задачу и не приписывай кандидату её требования."
+        "бери только их задачу и не приписывай кандидату её требования. "
+        f"Длина строго до {CHANNELS[channel]['max']} знаков: лучше короче, чем длиннее."
     )
     system = system_prompt(channel, prof.letter_label if prof else pname, accent)
     model = get_config().settings.anthropic_model

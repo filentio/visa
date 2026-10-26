@@ -10,7 +10,8 @@
   * new  — свежая генерация под вакансии из очереди. Ничего не сохраняет и
            не отправляет, только печатает.
 
-Под каждым письмом — найденные шаблонные маркеры (letter_style.style_tells).
+Под каждым письмом — замечания проверки (letters.review: обрыв, штампы,
+длина канала, числа не из резюме).
 
     cd /opt/jobsignal_local && .venv/bin/python tools/letter_preview.py sent 5
     cd /opt/jobsignal_local && .venv/bin/python tools/letter_preview.py new 3
@@ -36,15 +37,16 @@ from jobsignal.letter_style import style_tells  # noqa: E402
 DB = "data/jobsignal.db"
 
 
-def _show(title: str, text: str) -> None:
+def _show(title: str, text: str, issues: list | None = None) -> None:
     print("=" * 72)
     print(title)
     print("-" * 72)
-    print(text.strip())
-    tells = style_tells(text)
+    print(text.strip() or "(письма нет)")
+    if issues is None:
+        issues = style_tells(text)
     print("-" * 72)
-    print(f"{len(text.strip())} знаков · маркеры: "
-          + (", ".join(tells) if tells else "нет"))
+    print(f"{len(text.strip())} знаков · замечания: "
+          + (", ".join(issues) if issues else "нет"))
     print()
 
 
@@ -64,26 +66,41 @@ def sent(n: int) -> int:
 
 
 def new(n: int) -> int:
-    from jobsignal.agents.notify_bot import _cover_text
+    """Свежая генерация тем же сервисом, что автоотклик (jobsignal/letters.py),
+    по лучшему баллу среди ДЕЙСТВУЮЩИХ профилей и по каналу вакансии."""
+    from jobsignal import letters, profiles
+    active = profiles.names()
     c = sqlite3.connect(DB)
+    marks = ",".join("?" * len(active)) or "''"
     rows = c.execute(
-        """select v.id, v.role, v.company, coalesce(p.text, v.description, ''),
-                  (select profile_key from match_scores
-                    where vacancy_id = v.id order by score desc limit 1),
-                  (select max(score) from match_scores where vacancy_id = v.id)
-             from vacancies v left join raw_posts p on p.id = v.raw_post_id
+        f"""select v.id, v.role, v.company, v.contact_type,
+                  (select profile_key from match_scores where vacancy_id = v.id
+                     and profile_key in ({marks}) order by score desc limit 1),
+                  (select max(score) from match_scores where vacancy_id = v.id
+                     and profile_key in ({marks})) best
+             from vacancies v
             where v.is_primary = 1 and v.status in ('matched', 'drafted')
-            order by 6 desc, v.id desc limit ?""", (n,)).fetchall()
+              and best is not null
+            order by best desc, v.id desc limit ?""", (*active, *active, n)).fetchall()
+    stale = c.execute(
+        f"""select count(*) from vacancies v
+             where v.is_primary = 1 and v.status in ('matched', 'drafted')
+               and exists (select 1 from match_scores m where m.vacancy_id = v.id)
+               and not exists (select 1 from match_scores m where m.vacancy_id = v.id
+                                 and m.profile_key in ({marks}))""", active).fetchone()[0]
+    if stale:
+        print(f"в очереди {stale} вакансий с оценками только под снятые профили — "
+              f"они не в работе; переоценка: tools/rescore.py --profiles-changed\n")
     if not rows:
-        print("в очереди нет вакансий со статусом matched/drafted — "
-              "генерировать не подо что")
+        print("в очереди нет вакансий с оценкой под действующие профили")
         return 0
-    for vid, role, co, text, prof, score in rows:
-        from jobsignal import profiles
-        letter = _cover_text(role or "", co or "", prof or profiles.default_name(),
-                             vacancy_text=text or "")
-        _show(f"#{vid} · {score}% · {role or '—'} · {co or '—'} · профиль {prof}",
-              letter)
+    channel_of = {"hh": "hh", "tg": "telegram", "form": "form", "email": "email"}
+    for vid, role, co, ct, prof, score in rows:
+        ch = channel_of.get(ct or "", "hh")
+        letter = letters.for_vacancy(vid, channel=ch, profile=prof)
+        _show(f"#{vid} · {score}% · {role or '—'} · {co or '—'}\n"
+              f"профиль «{letter.profile}» · канал {letter.channel}",
+              letter.text, letter.issues)
     return 0
 
 
