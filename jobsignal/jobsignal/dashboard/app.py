@@ -1033,12 +1033,22 @@ LLM_FIELDS = [
     ("PROXY_WARN_PCT", "Предупредить при остатке, %", "number", "proxy"),
     ("HH_SEARCH_EVERY_H_PROXY", "Поиск hh через прокси раз в, ч", "number", "proxy"),
     ("HH_DESC_LIMIT_PROXY", "Описаний вакансий hh за прогон", "number", "proxy"),
+    # Экономия: у провайдеров без кэша промпта (YandexGPT, GigaChat) оценка
+    # сильной моделью на сотнях вакансий в день стоит дорого (03.11: ~$20 за 2 ч).
+    ("LLM_DAILY_TOKENS", "Дневной лимит токенов (0 — без лимита)", "number", "economy"),
+    ("MATCH_MODEL_TIER", "Модель для оценки вакансий", "tier", "economy"),
+    ("MATCH_PREFILTER", "Отсеивать чужие роли по названию без модели", "bool", "economy"),
+    ("MATCH_BATCH_LIMIT", "Вакансий на оценку за прогон", "number", "economy"),
+    ("PARSER_BATCH_LIMIT", "Постов на разбор за прогон", "number", "economy"),
+    ("MATCH_CV_CAP", "Длина резюме в оценке, знаков", "number", "economy"),
 ]
 
 
 # Умолчания настроек, которые читаются не через Settings, а прямо из окружения.
 _ENV_DEFAULTS = {"PROXY_WARN_PCT": "20", "HH_SEARCH_EVERY_H_PROXY": "3",
-                 "HH_DESC_LIMIT_PROXY": "40"}
+                 "HH_DESC_LIMIT_PROXY": "40", "LLM_DAILY_TOKENS": "0",
+                 "MATCH_MODEL_TIER": "big", "MATCH_PREFILTER": "true",
+                 "MATCH_CV_CAP": "8000"}
 
 
 def _same_origin() -> bool:
@@ -1095,7 +1105,7 @@ def api_settings_llm():
                 changes[env] = str(value).strip()
             continue                           # пусто — не менять
         value = "" if value is None else str(value).strip()
-        if value == "" and kind in ("text", "auth", "bool", "provider_opt", "number"):
+        if value == "" and kind in ("text", "auth", "bool", "provider_opt", "number", "tier"):
             # Пусто — значит «по умолчанию»: строку убираем из файла, а не
             # пишем пустую (пустая затёрла бы модель по умолчанию).
             if env in current:
@@ -1114,6 +1124,10 @@ def api_settings_llm():
             return jsonify({"ok": False, "error": f"провайдер {value!r} неизвестен"}), 400
         if kind == "bool":
             value = "true" if value.lower() in ("1", "true", "on", "yes") else "false"
+            if env == "MATCH_PREFILTER":
+                value = "1" if value == "true" else "0"
+        if kind == "tier" and value not in ("big", "small"):
+            return jsonify({"ok": False, "error": f"{env}: big или small"}), 400
         if env == "OPENAI_EXTRA_HEADERS" and value:
             try:
                 if not isinstance(json.loads(value), dict):
@@ -1156,6 +1170,14 @@ def api_settings_proxy():
     if not hh_session.proxy_url():
         return jsonify({"ok": True, "disabled": True})
     return jsonify({"ok": True, **proxy_meter.summary()})
+
+
+@app.route("/api/settings/usage")
+@_requires_auth
+def api_settings_usage():
+    """Токены модели за сегодня (UTC) по провайдерам и дневной лимит."""
+    from jobsignal import llm
+    return jsonify(llm.usage_today())
 
 
 @app.route("/api/settings/llm/check", methods=["POST"])

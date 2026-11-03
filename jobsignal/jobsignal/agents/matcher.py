@@ -24,10 +24,42 @@ from .base import BaseAgent
 
 log = logging.getLogger("jobsignal")
 
+# Предфильтр по названию: явно чужие роли не стоят вызова модели. 03.11
+# переоценка через YandexGPT (без кэша промпта) съела ~$20 за два часа, а
+# больше половины из 400 вакансий были Site Reliability Engineer, Fashion
+# Designer, рекрутёры. Отсекаем только по названию и только то, что не про
+# продукт/CRM: если в названии есть слово из KEEP, решает модель.
+PREFILTER_ON = os.environ.get("MATCH_PREFILTER", "1") != "0"
+_DROP = (
+    r"разработчик|программист|developer|engineer|инженер|тестировщик|\bqa\b|devops|"
+    r"\bsre\b|архитектор|architect|data scientist|дизайнер|designer|рекрутер|recruiter|"
+    r"sourcer|\bhrbp\b|hr[- ]менеджер|бухгалтер|accountant|юрист|legal|counsel|"
+    r"менеджер по продажам|отдела продаж|директор по продажам|head of sales|sales manager|"
+    r"account executive|business development|\bsdr\b|"
+    r"водитель|курьер|кладовщик|кассир|бариста|повар|врач|медсестр|оператор call|"
+    r"сварщик|электрик|монтажник|логист|закупщик|ассистент|assistant|секретар"
+)
+_KEEP = r"продукт|product|\bcpo\b|owner|crm|лояльн|loyalty|retention|удержан|геймифик|growth"
+_extra_drop = [w.strip() for w in os.environ.get("MATCH_PREFILTER_EXTRA", "").split(",") if w.strip()]
+_extra_keep = [w.strip() for w in os.environ.get("MATCH_PREFILTER_KEEP", "").split(",") if w.strip()]
+DROP_RE = re.compile("|".join([_DROP] + [re.escape(w) for w in _extra_drop]), re.IGNORECASE)
+KEEP_RE = re.compile("|".join([_KEEP] + [re.escape(w) for w in _extra_keep]), re.IGNORECASE)
+
+
+def prefilter_reason(role: str) -> str | None:
+    """Почему вакансию не стоит показывать модели, или None — показывать."""
+    if not PREFILTER_ON or not role:
+        return None
+    if KEEP_RE.search(role):
+        return None
+    m = DROP_RE.search(role)
+    return f"отсеяно по названию: «{m.group(0)}»" if m else None
+
+
 # 23.10: 4000 обрезало новые резюме (6700-7400 знаков) посередине опыта —
 # у профиля лояльности терялись СберСпасибо и Дикси. Система кэшируется,
 # так что длинные резюме почти не дорожают.
-CV_CAP = 8000  # ограничение длины резюме в промпте (контроль токенов)
+CV_CAP = int(os.environ.get("MATCH_CV_CAP", "8000"))  # длина резюме в промпте
 # потолок на описание вакансии: требования и обязанности почти всегда в начале,
 # а без предела одна многословная вакансия стоит как десяток обычных
 DESC_CAP = 3000
@@ -101,11 +133,15 @@ class MatcherAgent(BaseAgent):
         )
         system = SYSTEM_TMPL.replace("{profiles}", profiles_block)
 
-        model = cfg.settings.anthropic_model  # для anthropic; ollama/gigachat игнорят
+        # MATCH_MODEL_TIER=small — оценка лёгкой моделью: у провайдеров без
+        # кэша промпта (YandexGPT, GigaChat) сильная модель на сотнях вакансий
+        # в день обходится дорого. Письма при этом пишет сильная.
+        tier = (os.environ.get("MATCH_MODEL_TIER") or "big").strip().lower()
+        model = cfg.settings.parser_model if tier == "small" else cfg.settings.anthropic_model
         threshold = cfg.settings.match_threshold
         limit = limit or cfg.settings.match_batch_limit
 
-        scored = matched = skipped = errors = 0
+        scored = matched = skipped = errors = prefiltered = 0
         with Session() as s:
             # Телеграм-вакансии с контактом-каналом отбрасываем ЗАПРОСОМ, а не
             # после выборки. Разница не стилистическая: 06.10 этот фильтр стоял
@@ -198,6 +234,18 @@ class MatcherAgent(BaseAgent):
                 # стояла минутами, и автоотклик с ботом падали на «database is
                 # locked» (16.10, hh_apply_attempts). Коммит в SQLite WAL дешёвый.
                 s.commit()
+                why = prefilter_reason(v.role or "")
+                if why:
+                    # Нули под каждый профиль с причиной: вакансия больше не
+                    # вернётся в оценку, а в кабинете видно, почему отсеяна.
+                    for old in list(v.match_scores):
+                        s.delete(old)
+                    for pname in names:
+                        s.merge(MatchScore(vacancy_id=v.id, profile_key=pname,
+                                           score=0, reason=why))
+                    v.status = VacancyStatus.skipped
+                    prefiltered += 1
+                    continue
                 try:
                     # cache_system=True: система (три резюме) одинакова для всех
                     # вакансий прогона — со второй вакансии она читается из кэша
@@ -261,10 +309,12 @@ class MatcherAgent(BaseAgent):
                 s.commit()
             s.commit()
 
-        log.info("[matcher] оценено: %d, прошли порог (%d): %d, ниже порога: %d, ошибок: %d",
-                 scored, threshold, matched, skipped, errors)
+        log.info("[matcher] оценено: %d, прошли порог (%d): %d, ниже порога: %d, ошибок: %d, "
+                 "отсеяно по названию без модели: %d",
+                 scored, threshold, matched, skipped, errors, prefiltered)
         return {"agent": self.name, "scored": scored, "matched": matched,
-                "skipped": skipped, "errors": errors, "deferred": deferred}
+                "skipped": skipped, "errors": errors, "deferred": deferred,
+                "prefiltered": prefiltered}
 
     @staticmethod
     def _map_scores(data: dict, names: list[str]) -> dict[str, tuple[int, str | None]]:

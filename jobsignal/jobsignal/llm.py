@@ -119,6 +119,10 @@ def _anthropic_text(system, user, model, max_tokens, tag="", cache_system=False)
             raise LLMUnavailable(str(exc)) from exc
         raise LLMError(str(exc)) from exc
     _log_usage(model, resp.usage, tag)
+    u = resp.usage
+    _record_usage("anthropic", sum((getattr(u, n, 0) or 0) for n in (
+        "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens",
+        "output_tokens")))
     return "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
 
 
@@ -193,6 +197,8 @@ def _openai_chat(system, user, tier, max_tokens, as_json, tag=""):
     usage = data.get("usage") or {}
     log.info("[usage]%s model=%s in=%s out=%s", f" {tag}" if tag else "", model,
              usage.get("prompt_tokens", "?"), usage.get("completion_tokens", "?"))
+    _record_usage("openai", int(usage.get("total_tokens") or 0) or
+                  int(usage.get("prompt_tokens") or 0) + int(usage.get("completion_tokens") or 0))
     try:
         return data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError) as exc:
@@ -267,7 +273,9 @@ def _gigachat_chat(system, user, max_tokens, tier="big"):
         # 402 — исчерпан оплаченный лимит, 401/403 — доступ закрыт.
         cls = LLMUnavailable if r.status_code in (401, 402, 403) else LLMError
         raise cls(f"GigaChat HTTP {r.status_code}: {r.text[:200]}")
-    return r.json()["choices"][0]["message"]["content"]
+    data = r.json()
+    _record_usage("gigachat", int((data.get("usage") or {}).get("total_tokens") or 0))
+    return data["choices"][0]["message"]["content"]
 
 
 # --- Общий интерфейс ---
@@ -415,6 +423,98 @@ def _loads_lenient_many(text: str) -> list[dict]:
 
 PROVIDERS = ("anthropic", "openai", "gigachat", "ollama")
 
+# ── Дневной лимит токенов ────────────────────────────────────────────────────
+# 03.11 YandexGPT за два часа обошёлся в ~$20: переоценка прогнала 200
+# вакансий, у провайдера нет кэша промпта, и каждое резюме оплачивалось
+# заново. LLM_DAILY_TOKENS — потолок на сутки (по UTC) по всем провайдерам;
+# дошли — модель «закрыта» до завтра (LLMUnavailable: агенты прерывают прогон,
+# попытки постам не списываются), в бот уходит одно сообщение. 0 — без лимита.
+USAGE_FILE = "data/llm_usage.json"
+
+
+def _usage_path():
+    import os
+    from pathlib import Path
+    return Path(os.environ.get("LLM_USAGE_FILE", USAGE_FILE))
+
+
+def _daily_limit() -> int:
+    import os
+    try:
+        return int(float(os.environ.get("LLM_DAILY_TOKENS", "0") or 0))
+    except ValueError:
+        return 0
+
+
+def usage_today() -> dict:
+    """{'total': N, 'by_provider': {...}, 'limit': L} за сегодня (UTC)."""
+    from datetime import datetime, timezone
+    try:
+        data = json.loads(_usage_path().read_text())
+    except (OSError, ValueError):
+        data = {}
+    today = datetime.now(timezone.utc).date().isoformat()
+    day = data.get("days", {}).get(today, {})
+    return {"total": sum(day.values()), "by_provider": day, "limit": _daily_limit()}
+
+
+def _record_usage(provider: str, tokens: int) -> None:
+    import fcntl
+    from datetime import datetime, timedelta, timezone
+    if not tokens or tokens <= 0:
+        return
+    path = _usage_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path.with_suffix(".lock"), "w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, ValueError):
+                data = {}
+            days = data.setdefault("days", {})
+            now = datetime.now(timezone.utc).date()
+            day = days.setdefault(now.isoformat(), {})
+            day[provider] = day.get(provider, 0) + int(tokens)
+            cutoff = (now - timedelta(days=31)).isoformat()
+            data["days"] = {d: v for d, v in days.items() if d >= cutoff}
+            path.write_text(json.dumps(data))
+    except OSError as exc:
+        log.warning("[llm] учёт токенов не записан: %s", exc)
+
+
+def _check_budget() -> None:
+    limit = _daily_limit()
+    if limit <= 0:
+        return
+    used = usage_today()["total"]
+    if used < limit:
+        return
+    _notify_budget(used, limit)
+    raise LLMUnavailable(f"дневной лимит токенов исчерпан: {used} из {limit} "
+                         f"(LLM_DAILY_TOKENS) — продолжим завтра")
+
+
+def _notify_budget(used: int, limit: int) -> None:
+    """Одно сообщение в бот за сутки о том, что лимит исчерпан."""
+    from datetime import datetime, timezone
+    flag = _usage_path().with_suffix(".notified")
+    today = datetime.now(timezone.utc).date().isoformat()
+    try:
+        if flag.exists() and flag.read_text().strip() == today:
+            return
+        flag.parent.mkdir(parents=True, exist_ok=True)
+        flag.write_text(today)
+    except OSError:
+        return
+    try:
+        from jobsignal.agents.notify_bot import _send
+        _send(f"⏸ <b>Дневной лимит модели исчерпан</b>: {used} из {limit} токенов.\n"
+              "Разбор, оценка и письма продолжатся завтра. Лимит меняется в кабинете: "
+              "«Настройки» → «Экономия».")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("[llm] сообщение о лимите не отправлено: %s", exc)
+
 # Основной провайдер закрыт целиком — до этого времени сразу идём в запасной,
 # не тратя на каждый запрос заведомо отказной вызов.
 _primary_down_until = 0.0
@@ -443,6 +543,8 @@ def _raw(system, user, model, max_tokens, as_json, tag="", cache_system=False):
     fallback = (cfg.llm_fallback_provider or "").strip().lower()
     if fallback == primary:
         fallback = ""
+    if tag != "llm_check":
+        _check_budget()
     if fallback and time.time() < _primary_down_until:
         return _call(fallback, system, user, model, max_tokens, as_json, tag, cache_system)
     try:

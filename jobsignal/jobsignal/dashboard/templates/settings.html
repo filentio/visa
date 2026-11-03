@@ -97,6 +97,16 @@ th{color:var(--text2);font-weight:500;}
     <div class="grid" id="g-gigachat"></div>
   </div>
 
+  <h2 style="margin-top:28px">Экономия</h2>
+  <p class="sub">У Claude резюме в промпте кэшируются, и оценка вакансии стоит копейки. У
+    YandexGPT и GigaChat кэша нет: каждая вакансия оплачивается с обоими резюме целиком,
+    и сильная модель на сотнях вакансий в день обходится дорого. Лёгкая модель для оценки
+    дешевле в разы, письма при этом пишет сильная.</p>
+  <div class="card">
+    <div id="usage" class="note">…</div>
+    <div class="grid" id="g-economy"></div>
+  </div>
+
   <h2 style="margin-top:28px">Прокси</h2>
   <p class="sub">hh.ru не отдаёт страницы адресу этого сервера, поэтому поиск вакансий,
     автоотклик и учёт ответов идут через прокси. Трафик платный: когда пакет кончается,
@@ -136,13 +146,17 @@ function input(f) {
     html = `<select id="${id}">${['Bearer', 'Api-Key'].map(v =>
       `<option ${v === (f.value || 'Bearer') ? 'selected' : ''}>${v}</option>`).join('')}</select>`;
   } else if (f.kind === 'bool') {
-    const on = ['true', '1', 'yes', 'on'].includes(String(f.value).toLowerCase());
+    const on = ['true', '1', 'yes', 'on'].includes(String(f.value || f.default || '').toLowerCase());
     html = `<select id="${id}"><option value="false" ${on ? '' : 'selected'}>нет</option>
             <option value="true" ${on ? 'selected' : ''}>да</option></select>`;
   } else if (f.kind === 'secret') {
     html = `<input id="${id}" type="password" autocomplete="new-password"
              placeholder="${f.set ? 'задан — впиши новый, чтобы заменить' : 'не задан'}">
             <div class="hint ${f.set ? 'set' : ''}">${f.set ? '✓ задан ' + esc(f.hint) : 'ключа нет'}</div>`;
+  } else if (f.kind === 'tier') {
+    const v = f.value || f.default || 'big';
+    html = `<select id="${id}"><option value="big" ${v === 'big' ? 'selected' : ''}>сильная (точнее, дороже)</option>
+            <option value="small" ${v === 'small' ? 'selected' : ''}>лёгкая (дешевле в разы)</option></select>`;
   } else if (f.kind === 'number') {
     html = `<input id="${id}" inputmode="decimal" value="${esc(f.value)}" placeholder="${f.default ? 'по умолчанию: ' + esc(f.default) : ''}">`;
   } else {
@@ -154,10 +168,21 @@ function input(f) {
 async function load() {
   const d = await (await fetch('/api/settings/llm')).json();
   FIELDS = d.fields; PROVIDERS = d.providers;
-  for (const g of ['main', 'anthropic', 'openai', 'gigachat', 'proxy'])
+  for (const g of ['main', 'anthropic', 'openai', 'gigachat', 'proxy', 'economy'])
     document.getElementById('g-' + g).innerHTML = FIELDS.filter(f => f.group === g).map(input).join('');
   highlight();
   loadProxy();
+  loadUsage();
+}
+
+async function loadUsage() {
+  const box = document.getElementById('usage');
+  try {
+    const d = await (await fetch('/api/settings/usage')).json();
+    const by = Object.entries(d.by_provider || {}).map(([k, v]) => `${esc(PNAMES[k] || k)}: ${v.toLocaleString('ru-RU')}`).join(', ');
+    box.innerHTML = `Сегодня (UTC) потрачено <b>${(d.total || 0).toLocaleString('ru-RU')}</b> токенов`
+      + (by ? ` (${by})` : '') + (d.limit ? ` из дневного лимита ${d.limit.toLocaleString('ru-RU')}.` : '. Лимит не задан.');
+  } catch (e) { box.textContent = 'Расход не прочитан'; }
 }
 
 async function loadProxy(post) {
