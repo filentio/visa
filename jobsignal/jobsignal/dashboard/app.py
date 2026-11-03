@@ -1027,7 +1027,18 @@ LLM_FIELDS = [
     ("GIGACHAT_SCOPE", "Scope", "text", "gigachat"),
     ("GIGACHAT_MODEL", "Сильная модель", "text", "gigachat"),
     ("GIGACHAT_MODEL_SMALL", "Лёгкая модель", "text", "gigachat"),
+    # Прокси: hh отдаёт этому серверу 451, поиск и кабинет hh идут через него.
+    ("HH_PROXY", "Строка прокси (логин:пароль@хост:порт)", "secret", "proxy"),
+    ("PROXY_PACKAGE_GB", "Объём пакета, ГБ", "number", "proxy"),
+    ("PROXY_WARN_PCT", "Предупредить при остатке, %", "number", "proxy"),
+    ("HH_SEARCH_EVERY_H_PROXY", "Поиск hh через прокси раз в, ч", "number", "proxy"),
+    ("HH_DESC_LIMIT_PROXY", "Описаний вакансий hh за прогон", "number", "proxy"),
 ]
+
+
+# Умолчания настроек, которые читаются не через Settings, а прямо из окружения.
+_ENV_DEFAULTS = {"PROXY_WARN_PCT": "20", "HH_SEARCH_EVERY_H_PROXY": "3",
+                 "HH_DESC_LIMIT_PROXY": "40"}
 
 
 def _same_origin() -> bool:
@@ -1062,7 +1073,8 @@ def api_settings_llm():
                 item["value"] = raw
                 # Значение по умолчанию из кода — подсказкой в пустом поле.
                 fld = Settings.model_fields.get(env.lower())
-                item["default"] = "" if fld is None or fld.default is None else str(fld.default)
+                item["default"] = (_ENV_DEFAULTS.get(env, "") if fld is None or fld.default is None
+                                   else str(fld.default))
             fields.append(item)
         return jsonify({"fields": fields, "providers": list(llm.PROVIDERS)})
 
@@ -1083,12 +1095,19 @@ def api_settings_llm():
                 changes[env] = str(value).strip()
             continue                           # пусто — не менять
         value = "" if value is None else str(value).strip()
-        if value == "" and kind in ("text", "auth", "bool", "provider_opt"):
+        if value == "" and kind in ("text", "auth", "bool", "provider_opt", "number"):
             # Пусто — значит «по умолчанию»: строку убираем из файла, а не
             # пишем пустую (пустая затёрла бы модель по умолчанию).
             if env in current:
                 changes[env] = None
             continue
+        if kind == "number":
+            try:
+                if float(value.replace(",", ".")) < 0:
+                    raise ValueError
+            except ValueError:
+                return jsonify({"ok": False, "error": f"{env}: нужно неотрицательное число"}), 400
+            value = value.replace(",", ".")
         if kind == "provider" and value not in llm.PROVIDERS:
             return jsonify({"ok": False, "error": f"провайдер {value!r} неизвестен"}), 400
         if kind == "provider_opt" and value and value not in llm.PROVIDERS:
@@ -1122,6 +1141,21 @@ def api_settings_llm():
     names = ", ".join(sorted(changes))
     log.info("[settings] изменены настройки модели: %s", names)
     return jsonify({"ok": True, "message": f"Сохранено: {names}"})
+
+
+@app.route("/api/settings/proxy", methods=["GET", "POST"])
+@_requires_auth
+def api_settings_proxy():
+    """GET — расход трафика прокси; POST — «пакет пополнен»: обнулить счётчик."""
+    from jobsignal import hh_session, proxy_meter
+    if request.method == "POST":
+        if not _same_origin():
+            return jsonify({"ok": False, "error": "запрос не со страницы кабинета"}), 403
+        proxy_meter.topup()
+        log.info("[settings] пакет прокси отмечен пополненным")
+    if not hh_session.proxy_url():
+        return jsonify({"ok": True, "disabled": True})
+    return jsonify({"ok": True, **proxy_meter.summary()})
 
 
 @app.route("/api/settings/llm/check", methods=["POST"])

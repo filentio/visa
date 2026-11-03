@@ -97,6 +97,20 @@ th{color:var(--text2);font-weight:500;}
     <div class="grid" id="g-gigachat"></div>
   </div>
 
+  <h2 style="margin-top:28px">Прокси</h2>
+  <p class="sub">hh.ru не отдаёт страницы адресу этого сервера, поэтому поиск вакансий,
+    автоотклик и учёт ответов идут через прокси. Трафик платный: когда пакет кончается,
+    прокси не отказывает, а молчит, и встаёт всё, что связано с hh.</p>
+  <div class="card">
+    <div id="proxy-usage" class="note">…</div>
+    <div class="row" style="margin:0 0 14px">
+      <button class="btn" onclick="topup()">Пакет пополнен — обнулить счётчик</button>
+    </div>
+    <div class="grid" id="g-proxy"></div>
+    <div class="note" style="margin:10px 0 0">Поиск реже — меньше трафика, но новые вакансии
+      появляются позже. По умолчанию поиск раз в 3 ч и 40 описаний за прогон.</div>
+  </div>
+
   <div class="row">
     <button class="btn primary" onclick="save()">Сохранить</button>
     <button class="btn" onclick="check()">Проверить модели</button>
@@ -129,6 +143,8 @@ function input(f) {
     html = `<input id="${id}" type="password" autocomplete="new-password"
              placeholder="${f.set ? 'задан — впиши новый, чтобы заменить' : 'не задан'}">
             <div class="hint ${f.set ? 'set' : ''}">${f.set ? '✓ задан ' + esc(f.hint) : 'ключа нет'}</div>`;
+  } else if (f.kind === 'number') {
+    html = `<input id="${id}" inputmode="decimal" value="${esc(f.value)}" placeholder="${f.default ? 'по умолчанию: ' + esc(f.default) : ''}">`;
   } else {
     html = `<input id="${id}" value="${esc(f.value)}" placeholder="${f.default ? 'по умолчанию: ' + esc(f.default) : ''}">`;
   }
@@ -138,9 +154,32 @@ function input(f) {
 async function load() {
   const d = await (await fetch('/api/settings/llm')).json();
   FIELDS = d.fields; PROVIDERS = d.providers;
-  for (const g of ['main', 'anthropic', 'openai', 'gigachat'])
+  for (const g of ['main', 'anthropic', 'openai', 'gigachat', 'proxy'])
     document.getElementById('g-' + g).innerHTML = FIELDS.filter(f => f.group === g).map(input).join('');
   highlight();
+  loadProxy();
+}
+
+async function loadProxy(post) {
+  const box = document.getElementById('proxy-usage');
+  try {
+    const r = await fetch('/api/settings/proxy', post ? {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: '{}'} : {});
+    const d = await r.json();
+    if (d.disabled) { box.textContent = 'Прокси не задан.'; return; }
+    const left = d.package_gb
+      ? `осталось ~${d.left_mb} МБ из ${d.package_gb} ГБ (${d.left_pct}%)${d.days_left ? ', хватит на ' + d.days_left : ''}`
+      : 'объём пакета не задан — остаток не считается';
+    box.innerHTML = `С пополнения${d.topup_at ? ' ' + esc(d.topup_at.slice(0, 16).replace('T', ' ')) + ' UTC' : ''}:
+      <b>${d.since_topup_mb} МБ</b>; ${esc(left)}. Сегодня ${d.today_mb} МБ,
+      в среднем ${d.avg_day_mb || '—'} МБ/сут.`;
+  } catch (e) { box.textContent = 'Расход не прочитан'; }
+}
+
+async function topup() {
+  if (!confirm('Отметить пакет прокси пополненным? Счётчик расхода начнётся с нуля.')) return;
+  await loadProxy(true);
+  status('✓ Счётчик прокси обнулён. Проверь, что объём пакета указан верно, и сохрани, если менял.', 'ok');
 }
 
 function highlight() {
