@@ -123,13 +123,28 @@ def proxy_via_server(server: str) -> tuple[str, subprocess.Popen]:
     creds, at, hostport = rest.rpartition("@")
     if not at:
         creds, hostport = "", rest
+    print("Поднимаю SSH-туннель. Если спросит пароль сервера — введи его ещё раз.")
     tunnel = subprocess.Popen(
         ["ssh", "-N", "-o", "ExitOnForwardFailure=yes",
          "-L", f"{TUNNEL_PORT}:{hostport.rstrip('/')}", server])
+    # Ждём, пока туннель реально начнёт принимать подключения: при входе по
+    # паролю ssh висит на запросе пароля, и браузер, открытый раньше, пошёл
+    # бы в пустой порт.
+    import socket
     import time
-    time.sleep(4)
-    if tunnel.poll() is not None:
-        raise SystemExit("SSH-туннель не поднялся — проверь, что ssh к серверу работает")
+    deadline = time.time() + 180
+    while True:
+        if tunnel.poll() is not None:
+            raise SystemExit("SSH-туннель не поднялся — проверь, что ssh к серверу работает")
+        try:
+            with socket.create_connection(("127.0.0.1", TUNNEL_PORT), timeout=1):
+                break
+        except OSError:
+            pass
+        if time.time() > deadline:
+            tunnel.terminate()
+            raise SystemExit("SSH-туннель за 3 минуты не поднялся")
+        time.sleep(1)
     local = f"{scheme}://{creds + '@' if creds else ''}127.0.0.1:{TUNNEL_PORT}"
     print(f"прокси сервера через туннель: 127.0.0.1:{TUNNEL_PORT} → {hostport.split(':')[0]}")
     return local, tunnel
