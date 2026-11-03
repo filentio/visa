@@ -1004,6 +1004,146 @@ def api_profiles_rescore():
                     f"фоне, займёт 10-30 минут"})
 
 
+# ── настройки модели (LLM) ──────────────────────────────────────────────────
+# Ключи и провайдер правятся на странице «Настройки» и пишутся в config/.env
+# (jobsignal/env_store.py). Секреты наружу не отдаются: только «задан» и
+# последние четыре символа; пустое поле при сохранении — «не менять».
+
+LLM_FIELDS = [
+    # (переменная, подпись, вид, группа)
+    ("LLM_PROVIDER", "Основной провайдер", "provider", "main"),
+    ("LLM_FALLBACK_PROVIDER", "Запасной провайдер", "provider_opt", "main"),
+    ("ANTHROPIC_API_KEY", "Ключ API", "secret", "anthropic"),
+    ("ANTHROPIC_MODEL", "Сильная модель (оценка, письма)", "text", "anthropic"),
+    ("PARSER_MODEL", "Лёгкая модель (разбор постов)", "text", "anthropic"),
+    ("OPENAI_BASE_URL", "Адрес API", "text", "openai"),
+    ("OPENAI_API_KEY", "Ключ API", "secret", "openai"),
+    ("OPENAI_MODEL", "Сильная модель", "text", "openai"),
+    ("OPENAI_MODEL_SMALL", "Лёгкая модель", "text", "openai"),
+    ("OPENAI_AUTH_SCHEME", "Схема авторизации", "auth", "openai"),
+    ("OPENAI_EXTRA_HEADERS", "Доп. заголовки (JSON)", "text", "openai"),
+    ("OPENAI_JSON_MODE", "Режим JSON (response_format)", "bool", "openai"),
+    ("GIGACHAT_AUTH_KEY", "Ключ авторизации", "secret", "gigachat"),
+    ("GIGACHAT_SCOPE", "Scope", "text", "gigachat"),
+    ("GIGACHAT_MODEL", "Сильная модель", "text", "gigachat"),
+    ("GIGACHAT_MODEL_SMALL", "Лёгкая модель", "text", "gigachat"),
+]
+
+
+def _same_origin() -> bool:
+    """Запрос на запись пришёл со страницы самого кабинета, а не с чужого сайта."""
+    origin = request.headers.get("Origin")
+    if not origin:
+        return True
+    from urllib.parse import urlsplit
+    return urlsplit(origin).netloc == request.host
+
+
+@app.route("/settings")
+@_requires_auth
+def settings_page():
+    return render_template("settings.html")
+
+
+@app.route("/api/settings/llm", methods=["GET", "POST"])
+@_requires_auth
+def api_settings_llm():
+    from jobsignal import env_store, llm
+    if request.method == "GET":
+        from jobsignal.config import Settings
+        cur = env_store.read()
+        fields = []
+        for env, label, kind, group in LLM_FIELDS:
+            raw = cur.get(env, "")
+            item = {"env": env, "label": label, "kind": kind, "group": group}
+            if kind == "secret":
+                item.update(env_store.mask(raw))
+            else:
+                item["value"] = raw
+                # Значение по умолчанию из кода — подсказкой в пустом поле.
+                fld = Settings.model_fields.get(env.lower())
+                item["default"] = "" if fld is None or fld.default is None else str(fld.default)
+            fields.append(item)
+        return jsonify({"fields": fields, "providers": list(llm.PROVIDERS)})
+
+    if not _same_origin():
+        return jsonify({"ok": False, "error": "запрос не со страницы кабинета"}), 403
+    data = request.get_json() or {}
+    kinds = {env: kind for env, _, kind, _ in LLM_FIELDS}
+    current = env_store.read()
+    changes = {}
+    for env, value in data.items():
+        if env not in kinds:
+            return jsonify({"ok": False, "error": f"неизвестная настройка {env}"}), 400
+        kind = kinds[env]
+        if kind == "secret":
+            if value is None:
+                changes[env] = None            # явное «удалить ключ»
+            elif str(value).strip():
+                changes[env] = str(value).strip()
+            continue                           # пусто — не менять
+        value = "" if value is None else str(value).strip()
+        if value == "" and kind in ("text", "auth", "bool", "provider_opt"):
+            # Пусто — значит «по умолчанию»: строку убираем из файла, а не
+            # пишем пустую (пустая затёрла бы модель по умолчанию).
+            if env in current:
+                changes[env] = None
+            continue
+        if kind == "provider" and value not in llm.PROVIDERS:
+            return jsonify({"ok": False, "error": f"провайдер {value!r} неизвестен"}), 400
+        if kind == "provider_opt" and value and value not in llm.PROVIDERS:
+            return jsonify({"ok": False, "error": f"провайдер {value!r} неизвестен"}), 400
+        if kind == "bool":
+            value = "true" if value.lower() in ("1", "true", "on", "yes") else "false"
+        if env == "OPENAI_EXTRA_HEADERS" and value:
+            try:
+                if not isinstance(json.loads(value), dict):
+                    raise ValueError
+            except ValueError:
+                return jsonify({"ok": False, "error": "Доп. заголовки: нужен JSON-объект, "
+                                "например {\"x-folder-id\": \"b1g...\"}"}), 400
+        changes[env] = value
+    changes = {k: v for k, v in changes.items() if current.get(k) != v}
+    if not changes:
+        return jsonify({"ok": True, "message": "Изменений нет"})
+    try:
+        env_store.update(changes)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    # Бот — долгоживущий процесс со своими настройками в памяти: перезапуск,
+    # чтобы письма по кнопкам в боте шли через новую модель. Процессы по
+    # таймеру прочитают файл сами при следующем запуске.
+    try:
+        import subprocess
+        subprocess.Popen(["systemctl", "restart", "jobsignal-bot"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as exc:  # noqa: BLE001 — не на сервере с systemd
+        log.warning("[settings] бот не перезапущен: %s", exc)
+    names = ", ".join(sorted(changes))
+    log.info("[settings] изменены настройки модели: %s", names)
+    return jsonify({"ok": True, "message": f"Сохранено: {names}"})
+
+
+@app.route("/api/settings/llm/check", methods=["POST"])
+@_requires_auth
+def api_settings_llm_check():
+    """Отвечают ли обе модели у основного и запасного провайдера."""
+    if not _same_origin():
+        return jsonify({"ok": False, "error": "запрос не со страницы кабинета"}), 403
+    from jobsignal import llm
+    from jobsignal.config import get_config
+    st = get_config().settings
+    out = []
+    for role, name in (("основной", st.llm_provider), ("запасной", st.llm_fallback_provider)):
+        name = (name or "").strip().lower()
+        if not name:
+            continue
+        res = llm.check(name)
+        out.append({"role": role, "provider": name,
+                    "small": list(res["small"]), "big": list(res["big"])})
+    return jsonify({"ok": True, "results": out})
+
+
 # ── pipeline trigger ──────────────────────────────────────────────────────────
 
 @app.route("/api/pipeline/run", methods=["POST"])

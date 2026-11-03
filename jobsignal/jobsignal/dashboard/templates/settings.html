@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Настройки — JobSignal</title>
+<style>
+:root{
+  --bg:#131722;--bg2:#1a2235;--bg3:#1e2d45;
+  --accent:#4F46E5;--accent2:#6366f1;
+  --green:#22c55e;--red:#ef4444;--amber:#f59e0b;--gray:#64748b;
+  --text:#e2e8f0;--text2:#94a3b8;--border:#2a3a55;
+  --radius:10px;--font:'Inter',system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;min-height:100vh;}
+a{color:var(--accent2);text-decoration:none;}
+nav{background:var(--bg2);border-bottom:1px solid var(--border);
+  padding:12px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;row-gap:8px;}
+nav .logo{font-weight:700;font-size:15px;}
+nav a{color:var(--text2);font-size:13px;}
+nav a.active{color:var(--accent2);}
+.wrap{max-width:860px;margin:0 auto;padding:24px 16px 48px;}
+h2{font-size:20px;font-weight:700;margin-bottom:8px;}
+.sub{color:var(--text2);font-size:13px;margin-bottom:20px;line-height:1.5;}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:18px;margin-bottom:16px;}
+.card h3{font-size:14px;margin-bottom:4px;}
+.card .note{color:var(--text2);font-size:12.5px;margin-bottom:14px;line-height:1.5;}
+.card.inactive{opacity:.65;}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+@media(max-width:640px){.grid{grid-template-columns:1fr;}}
+.field label{display:block;font-size:11px;color:var(--text2);margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em;}
+.field input,.field select{width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);
+  border-radius:6px;padding:8px 10px;font:inherit;font-size:13px;}
+.field .hint{font-size:11.5px;color:var(--text2);margin-top:4px;}
+.field .hint.set{color:var(--green);}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px;}
+.btn{background:var(--bg3);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer;}
+.btn:hover{border-color:var(--accent);}
+.btn.primary{background:var(--accent);border-color:var(--accent);}
+.status{font-size:13px;min-height:18px;margin-top:10px;line-height:1.5;}
+.ok{color:var(--green);} .err{color:#f87171;} .muted{color:var(--text2);}
+table{width:100%;border-collapse:collapse;margin-top:10px;}
+td,th{text-align:left;padding:7px 8px;border-bottom:1px solid var(--border);font-size:12.5px;vertical-align:top;}
+th{color:var(--text2);font-weight:500;}
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo">⚡ JobSignal</span>
+  <a href="/status">Состояние</a>
+  <a href="/">Вакансии</a>
+  <a href="/analytics">Аналитика</a>
+  <a href="/channels">Каналы</a>
+  <a href="/resumes">Резюме</a>
+  <a href="/recruiters">Рекрутёры</a>
+  <a href="/settings" class="active">Настройки</a>
+</nav>
+
+<div class="wrap">
+  <h2>Модель (LLM)</h2>
+  <p class="sub">
+    Через модель идут разбор постов, оценка вакансий и письма. Основной провайдер
+    работает всегда; запасной включается сам, если основной закрыт (ключ, оплата,
+    верификация), и система раз в 15 минут проверяет, не вернулся ли основной.
+    Ключи только записываются: страница их не показывает. Пустое поле ключа при
+    сохранении — «оставить как есть».
+  </p>
+
+  <div class="card">
+    <h3>Провайдеры</h3>
+    <div class="grid" id="g-main"></div>
+  </div>
+
+  <div class="card" id="c-anthropic">
+    <h3>Anthropic (Claude)</h3>
+    <div class="note">console.anthropic.com → API Keys.</div>
+    <div class="grid" id="g-anthropic"></div>
+  </div>
+
+  <div class="card" id="c-openai">
+    <h3>OpenAI-совместимый API</h3>
+    <div class="note">YandexGPT, DeepSeek, OpenAI и другие. Заготовки заполнят адрес и модели —
+      останется вписать ключ.
+      <div class="row">
+        <button class="btn" onclick="presetYandex()">Заготовка: YandexGPT</button>
+        <button class="btn" onclick="presetDeepSeek()">Заготовка: DeepSeek</button>
+      </div>
+    </div>
+    <div class="grid" id="g-openai"></div>
+  </div>
+
+  <div class="card" id="c-gigachat">
+    <h3>GigaChat (Сбер)</h3>
+    <div class="note">developers.sber.ru → проект GigaChat API → «Авторизационные данные».</div>
+    <div class="grid" id="g-gigachat"></div>
+  </div>
+
+  <div class="row">
+    <button class="btn primary" onclick="save()">Сохранить</button>
+    <button class="btn" onclick="check()">Проверить модели</button>
+  </div>
+  <div class="status" id="status"></div>
+  <div id="check"></div>
+</div>
+
+<script>
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let FIELDS = [], PROVIDERS = [];
+const PNAMES = {anthropic: 'Anthropic (Claude)', openai: 'OpenAI-совместимый', gigachat: 'GigaChat', ollama: 'Ollama (локально)'};
+
+function input(f) {
+  const id = 'f-' + f.env;
+  let html = '';
+  if (f.kind === 'provider' || f.kind === 'provider_opt') {
+    const opts = (f.kind === 'provider_opt' ? [['', 'нет']] : [])
+      .concat(PROVIDERS.map(p => [p, PNAMES[p] || p]));
+    html = `<select id="${id}" onchange="highlight()">${opts.map(([v, l]) =>
+      `<option value="${esc(v)}" ${v === f.value ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+  } else if (f.kind === 'auth') {
+    html = `<select id="${id}">${['Bearer', 'Api-Key'].map(v =>
+      `<option ${v === (f.value || 'Bearer') ? 'selected' : ''}>${v}</option>`).join('')}</select>`;
+  } else if (f.kind === 'bool') {
+    const on = ['true', '1', 'yes', 'on'].includes(String(f.value).toLowerCase());
+    html = `<select id="${id}"><option value="false" ${on ? '' : 'selected'}>нет</option>
+            <option value="true" ${on ? 'selected' : ''}>да</option></select>`;
+  } else if (f.kind === 'secret') {
+    html = `<input id="${id}" type="password" autocomplete="new-password"
+             placeholder="${f.set ? 'задан — впиши новый, чтобы заменить' : 'не задан'}">
+            <div class="hint ${f.set ? 'set' : ''}">${f.set ? '✓ задан ' + esc(f.hint) : 'ключа нет'}</div>`;
+  } else {
+    html = `<input id="${id}" value="${esc(f.value)}" placeholder="${f.default ? 'по умолчанию: ' + esc(f.default) : ''}">`;
+  }
+  return `<div class="field"><label>${esc(f.label)}</label>${html}</div>`;
+}
+
+async function load() {
+  const d = await (await fetch('/api/settings/llm')).json();
+  FIELDS = d.fields; PROVIDERS = d.providers;
+  for (const g of ['main', 'anthropic', 'openai', 'gigachat'])
+    document.getElementById('g-' + g).innerHTML = FIELDS.filter(f => f.group === g).map(input).join('');
+  highlight();
+}
+
+function highlight() {
+  const used = [val('LLM_PROVIDER'), val('LLM_FALLBACK_PROVIDER')];
+  for (const g of ['anthropic', 'openai', 'gigachat'])
+    document.getElementById('c-' + g).classList.toggle('inactive', !used.includes(g));
+}
+
+const el = env => document.getElementById('f-' + env);
+const val = env => (el(env) || {}).value || '';
+const set = (env, v) => { if (el(env)) el(env).value = v; };
+
+function presetYandex() {
+  const folder = prompt('Идентификатор каталога Yandex Cloud (начинается на b1g…):');
+  if (!folder) return;
+  const f = folder.trim();
+  set('OPENAI_BASE_URL', 'https://llm.api.cloud.yandex.net/v1');
+  set('OPENAI_AUTH_SCHEME', 'Api-Key');
+  set('OPENAI_MODEL', `gpt://${f}/yandexgpt/latest`);
+  set('OPENAI_MODEL_SMALL', `gpt://${f}/yandexgpt-lite/latest`);
+  set('OPENAI_EXTRA_HEADERS', JSON.stringify({'x-folder-id': f}));
+  status('Заготовка YandexGPT заполнена: впиши API-ключ сервисного аккаунта и выбери openai основным или запасным', 'muted');
+}
+
+function presetDeepSeek() {
+  set('OPENAI_BASE_URL', 'https://api.deepseek.com/v1');
+  set('OPENAI_AUTH_SCHEME', 'Bearer');
+  set('OPENAI_MODEL', 'deepseek-chat');
+  set('OPENAI_MODEL_SMALL', 'deepseek-chat');
+  set('OPENAI_EXTRA_HEADERS', '');
+  status('Заготовка DeepSeek заполнена: впиши ключ. Учти: данные (резюме, вакансии) уходят на серверы в Китае', 'muted');
+}
+
+function status(text, cls) {
+  const s = document.getElementById('status');
+  s.textContent = text; s.className = 'status ' + (cls || '');
+}
+
+async function save() {
+  const body = {};
+  for (const f of FIELDS) {
+    const v = val(f.env);
+    if (f.kind === 'secret') { if (v.trim()) body[f.env] = v.trim(); }
+    else body[f.env] = v;
+  }
+  status('Сохраняю…', 'muted');
+  const r = await fetch('/api/settings/llm', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  const d = await r.json();
+  if (!d.ok) { status('✗ ' + d.error, 'err'); return; }
+  status('✓ ' + d.message + '. Действует со следующего прогона; бот перезапущен. Нажми «Проверить модели».', 'ok');
+  load();
+}
+
+async function check() {
+  document.getElementById('check').innerHTML = '<div class="status muted">Проверяю… до минуты</div>';
+  const r = await fetch('/api/settings/llm/check', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: '{}'});
+  const d = await r.json();
+  if (!d.ok) { document.getElementById('check').innerHTML = `<div class="status err">✗ ${esc(d.error)}</div>`; return; }
+  const cell = ([kind, detail]) => `<span class="${kind === 'ok' ? 'ok' : 'err'}">${kind === 'ok' ? '✅' : '❌'} ${esc(kind)}</span>
+    <div class="muted">${esc(detail)}</div>`;
+  document.getElementById('check').innerHTML = `<table>
+    <tr><th>Провайдер</th><th>Лёгкая (разбор)</th><th>Сильная (оценка, письма)</th></tr>
+    ${d.results.map(x => `<tr><td>${esc(x.role)}: ${esc(PNAMES[x.provider] || x.provider)}</td>
+      <td>${cell(x.small)}</td><td>${cell(x.big)}</td></tr>`).join('')}</table>`;
+}
+
+load();
+</script>
+</body>
+</html>
