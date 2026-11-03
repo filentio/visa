@@ -203,7 +203,10 @@ async function check() {
   if (!d.ok) { document.getElementById('check').innerHTML = `<div class="status err">✗ ${esc(d.error)}</div>`; return; }
   const cell = ([kind, detail]) => `<span class="${kind === 'ok' ? 'ok' : 'err'}">${kind === 'ok' ? '✅' : '❌'} ${esc(kind)}</span>
     <div class="muted">${esc(detail)}</div>`;
-  document.getElementById('check').innerHTML = `<table>
+  const idle = d.results.filter(x => x.role === 'не выбран');
+  const tip = idle.length ? `<div class="status muted">«Не выбран» — ключ вписан, но провайдер не
+    стоит ни основным, ни запасным: выбери его в блоке «Провайдеры» и сохрани.</div>` : '';
+  document.getElementById('check').innerHTML = tip + `<table>
     <tr><th>Провайдер</th><th>Лёгкая (разбор)</th><th>Сильная (оценка, письма)</th></tr>
     ${d.results.map(x => `<tr><td>${esc(x.role)}: ${esc(PNAMES[x.provider] || x.provider)}</td>
       <td>${cell(x.small)}</td><td>${cell(x.big)}</td></tr>`).join('')}</table>`;

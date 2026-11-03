@@ -1134,13 +1134,26 @@ def api_settings_llm_check():
     from jobsignal.config import get_config
     st = get_config().settings
     out = []
+    chosen = []
     for role, name in (("основной", st.llm_provider), ("запасной", st.llm_fallback_provider)):
         name = (name or "").strip().lower()
         if not name:
             continue
+        chosen.append(name)
         res = llm.check(name)
         out.append({"role": role, "provider": name,
                     "small": list(res["small"]), "big": list(res["big"])})
+    # Ключ вписан, а провайдер не выбран ни основным, ни запасным (03.11: ключ
+    # Яндекса сохранили, а проверка показала только Anthropic). Проверяем и
+    # его, чтобы было видно, что он рабочий и его осталось выбрать.
+    configured = {"openai": bool(st.openai_api_key and st.openai_base_url),
+                  "gigachat": bool(st.gigachat_auth_key),
+                  "anthropic": bool(st.anthropic_api_key)}
+    for name, has_key in configured.items():
+        if has_key and name not in chosen:
+            res = llm.check(name)
+            out.append({"role": "не выбран", "provider": name,
+                        "small": list(res["small"]), "big": list(res["big"])})
     return jsonify({"ok": True, "results": out})
 
 
