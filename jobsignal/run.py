@@ -423,15 +423,25 @@ def main():
         from jobsignal import llm
         from jobsignal.config import get_config
         st = get_config().settings
-        names = [st.llm_provider] + ([st.llm_fallback_provider]
-                                     if st.llm_fallback_provider else [])
+        roles = [("основной", st.llm_provider)]
+        if st.llm_fallback_provider:
+            roles.append(("запасной", st.llm_fallback_provider))
+        for task, label in (("parse", "разбор"), ("match", "оценка"),
+                            ("letter", "письма"), ("facts", "проверка фактов")):
+            roles.append((f"задача «{label}»", llm.route(task)))
+        seen, names = set(), []
+        for role, name in roles:
+            name = (name or "").strip().lower()
+            if name and name not in seen:
+                seen.add(name)
+                names.append((role, name))
         bad = False
-        for i, name in enumerate(names):
-            print(f"{'основной' if i == 0 else 'запасной'}: {name}")
+        for i, (role, name) in enumerate(names):
+            print(f"{role}: {name}")
             for tier, (kind, detail) in llm.check(name.strip().lower()).items():
                 label = "лёгкая (разбор)" if tier == "small" else "сильная (оценка, письма)"
                 print(f"  {label:26} {'✅' if kind == 'ok' else '❌'} {kind}: {detail}")
-                bad = bad or (kind != "ok" and i == len(names) - 1)
+                bad = bad or (kind != "ok" and role != "основной")
         sys.exit(1 if bad else 0)
 
     elif cmd == "tg-scout":

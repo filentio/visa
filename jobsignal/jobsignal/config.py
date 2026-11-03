@@ -91,6 +91,21 @@ class Settings(BaseSettings):
     # response_format=json_object для ответов-JSON; не все провайдеры его знают.
     openai_json_mode: bool = Field(default=False)
 
+    # --- DeepSeek (LLM_PROVIDER=deepseek или маршрут задачи) ---
+    # Отдельное подключение рядом с OPENAI_*: так Яндекс и DeepSeek работают
+    # одновременно, каждый на своих задачах (LLM_ROUTE_*).
+    deepseek_api_key: str = Field(default="")
+    deepseek_base_url: str = Field(default="https://api.deepseek.com")
+    deepseek_model: str = Field(default="deepseek-chat")
+    deepseek_model_small: str = Field(default="")
+
+    # Маршруты задач: какой провайдер делает разбор постов, оценку вакансий,
+    # письма и проверку фактов. Пусто — LLM_PROVIDER.
+    llm_route_parse: str = Field(default="")
+    llm_route_match: str = Field(default="")
+    llm_route_letter: str = Field(default="")
+    llm_route_facts: str = Field(default="")
+
     # Запасной провайдер: если основной закрыт (ключ, оплата, верификация),
     # запросы идут сюда. 03.11 Anthropic закрыл доступ до верификации
     # организации, и конвейер встал целиком. Пусто — без запасного.

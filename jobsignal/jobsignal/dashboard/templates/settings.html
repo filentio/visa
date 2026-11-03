@@ -73,6 +73,24 @@ th{color:var(--text2);font-weight:500;}
     <div class="grid" id="g-main"></div>
   </div>
 
+  <div class="card">
+    <h3>Задачи</h3>
+    <div class="note">Какой провайдер делает каждую задачу. «нет» — основной провайдер.
+      Разбор и оценка массовые — им нужна дешёвая модель; письма — лучший русский текст.
+      Перед оценкой из резюме убираются имя и контакты.</div>
+    <div class="grid" id="g-routes"></div>
+    <div class="row">
+      <button class="btn" onclick="presetRoutes()">Схема: разбор и оценка — DeepSeek, письма — основной</button>
+    </div>
+  </div>
+
+  <div class="card" id="c-deepseek">
+    <h3>DeepSeek</h3>
+    <div class="note">platform.deepseek.com → API Keys. Самый дешёвый для массовых задач, есть
+      скидка на повторяющееся начало запроса (резюме в оценке). Данные уходят на серверы в Китае.</div>
+    <div class="grid" id="g-deepseek"></div>
+  </div>
+
   <div class="card" id="c-anthropic">
     <h3>Anthropic (Claude)</h3>
     <div class="note">console.anthropic.com → API Keys.</div>
@@ -132,13 +150,13 @@ th{color:var(--text2);font-weight:500;}
 <script>
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let FIELDS = [], PROVIDERS = [];
-const PNAMES = {anthropic: 'Anthropic (Claude)', openai: 'OpenAI-совместимый', gigachat: 'GigaChat', ollama: 'Ollama (локально)'};
+const PNAMES = {anthropic: 'Anthropic (Claude)', openai: 'OpenAI-совместимый (Яндекс и др.)', deepseek: 'DeepSeek', gigachat: 'GigaChat', ollama: 'Ollama (локально)'};
 
 function input(f) {
   const id = 'f-' + f.env;
   let html = '';
   if (f.kind === 'provider' || f.kind === 'provider_opt') {
-    const opts = (f.kind === 'provider_opt' ? [['', 'нет']] : [])
+    const opts = (f.kind === 'provider_opt' ? [['', f.group === 'routes' ? 'основной' : 'нет']] : [])
       .concat(PROVIDERS.map(p => [p, PNAMES[p] || p]));
     html = `<select id="${id}" onchange="highlight()">${opts.map(([v, l]) =>
       `<option value="${esc(v)}" ${v === f.value ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
@@ -168,7 +186,7 @@ function input(f) {
 async function load() {
   const d = await (await fetch('/api/settings/llm')).json();
   FIELDS = d.fields; PROVIDERS = d.providers;
-  for (const g of ['main', 'anthropic', 'openai', 'gigachat', 'proxy', 'economy'])
+  for (const g of ['main', 'routes', 'deepseek', 'anthropic', 'openai', 'gigachat', 'proxy', 'economy'])
     document.getElementById('g-' + g).innerHTML = FIELDS.filter(f => f.group === g).map(input).join('');
   highlight();
   loadProxy();
@@ -208,8 +226,9 @@ async function topup() {
 }
 
 function highlight() {
-  const used = [val('LLM_PROVIDER'), val('LLM_FALLBACK_PROVIDER')];
-  for (const g of ['anthropic', 'openai', 'gigachat'])
+  const used = ['LLM_PROVIDER', 'LLM_FALLBACK_PROVIDER', 'LLM_ROUTE_PARSE', 'LLM_ROUTE_MATCH',
+                'LLM_ROUTE_LETTER', 'LLM_ROUTE_FACTS'].map(val);
+  for (const g of ['anthropic', 'openai', 'deepseek', 'gigachat'])
     document.getElementById('c-' + g).classList.toggle('inactive', !used.includes(g));
 }
 
@@ -227,6 +246,15 @@ function presetYandex() {
   set('OPENAI_MODEL_SMALL', `gpt://${f}/yandexgpt-lite/latest`);
   set('OPENAI_EXTRA_HEADERS', JSON.stringify({'x-folder-id': f}));
   status('Заготовка YandexGPT заполнена: впиши API-ключ сервисного аккаунта и выбери openai основным или запасным', 'muted');
+}
+
+function presetRoutes() {
+  set('LLM_ROUTE_PARSE', 'deepseek');
+  set('LLM_ROUTE_MATCH', 'deepseek');
+  set('LLM_ROUTE_LETTER', '');
+  set('LLM_ROUTE_FACTS', '');
+  highlight();
+  status('Схема выбрана: впиши ключ DeepSeek, проверь, что основной провайдер — тот, кто пишет письма (например, OpenAI-совместимый с YandexGPT), и сохрани', 'muted');
 }
 
 function presetDeepSeek() {

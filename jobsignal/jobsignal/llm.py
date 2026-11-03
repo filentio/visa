@@ -161,19 +161,33 @@ def _tier(model: str) -> str:
 
 # --- OpenAI-совместимый (YandexGPT, DeepSeek, OpenAI…) ---
 
-def _openai_chat(system, user, tier, max_tokens, as_json, tag=""):
+def _compat_conf(provider: str) -> dict:
+    """Настройки OpenAI-совместимого подключения: openai (общее) или deepseek."""
     cfg = get_config().settings
-    if not (cfg.openai_base_url and cfg.openai_api_key and cfg.openai_model):
-        raise LLMUnavailable("OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL не заданы "
-                             "в config/.env")
-    model = (cfg.openai_model_small if tier == "small" else "") or cfg.openai_model
-    headers = {"Authorization": f"{cfg.openai_auth_scheme} {cfg.openai_api_key}",
+    if provider == "deepseek":
+        return {"name": "deepseek", "env": "DEEPSEEK", "base_url": cfg.deepseek_base_url,
+                "api_key": cfg.deepseek_api_key, "model": cfg.deepseek_model,
+                "model_small": cfg.deepseek_model_small, "auth": "Bearer",
+                "headers": "", "json_mode": False}
+    return {"name": "openai", "env": "OPENAI", "base_url": cfg.openai_base_url,
+            "api_key": cfg.openai_api_key, "model": cfg.openai_model,
+            "model_small": cfg.openai_model_small, "auth": cfg.openai_auth_scheme,
+            "headers": cfg.openai_extra_headers, "json_mode": cfg.openai_json_mode}
+
+
+def _openai_chat(system, user, tier, max_tokens, as_json, tag="", provider="openai"):
+    c = _compat_conf(provider)
+    if not (c["base_url"] and c["api_key"] and c["model"]):
+        raise LLMUnavailable(f"{c['env']}_BASE_URL / {c['env']}_API_KEY / {c['env']}_MODEL "
+                             f"не заданы (кабинет → «Настройки»)")
+    model = (c["model_small"] if tier == "small" else "") or c["model"]
+    headers = {"Authorization": f"{c['auth']} {c['api_key']}",
                "Content-Type": "application/json"}
-    if cfg.openai_extra_headers.strip():
+    if (c["headers"] or "").strip():
         try:
-            headers.update(json.loads(cfg.openai_extra_headers))
+            headers.update(json.loads(c["headers"]))
         except ValueError as exc:
-            raise LLMUnavailable(f"OPENAI_EXTRA_HEADERS не JSON: {exc}") from exc
+            raise LLMUnavailable(f"{c['env']}_EXTRA_HEADERS не JSON: {exc}") from exc
     payload = {
         "model": model,
         "messages": [{"role": "system", "content": system},
@@ -181,9 +195,9 @@ def _openai_chat(system, user, tier, max_tokens, as_json, tag=""):
         "temperature": 0.2,
         "max_tokens": max_tokens,
     }
-    if as_json and cfg.openai_json_mode:
+    if as_json and c["json_mode"]:
         payload["response_format"] = {"type": "json_object"}
-    url = cfg.openai_base_url.rstrip("/") + "/chat/completions"
+    url = c["base_url"].rstrip("/") + "/chat/completions"
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=180)
     except requests.RequestException as exc:
@@ -195,9 +209,13 @@ def _openai_chat(system, user, tier, max_tokens, as_json, tag=""):
         raise (LLMUnavailable if fatal else LLMError)(f"HTTP {r.status_code}: {text}")
     data = r.json()
     usage = data.get("usage") or {}
-    log.info("[usage]%s model=%s in=%s out=%s", f" {tag}" if tag else "", model,
-             usage.get("prompt_tokens", "?"), usage.get("completion_tokens", "?"))
-    _record_usage("openai", int(usage.get("total_tokens") or 0) or
+    # DeepSeek сообщает, сколько входа пришло из кэша: по этой строке видно,
+    # работает ли скидка на повторяющиеся резюме.
+    hit = usage.get("prompt_cache_hit_tokens")
+    log.info("[usage]%s model=%s in=%s out=%s%s", f" {tag}" if tag else "", model,
+             usage.get("prompt_tokens", "?"), usage.get("completion_tokens", "?"),
+             f" cache_hit={hit}" if hit is not None else "")
+    _record_usage(c["name"], int(usage.get("total_tokens") or 0) or
                   int(usage.get("prompt_tokens") or 0) + int(usage.get("completion_tokens") or 0))
     try:
         return data["choices"][0]["message"]["content"] or ""
@@ -421,7 +439,8 @@ def _loads_lenient_many(text: str) -> list[dict]:
     raise json.JSONDecodeError("массив без пригодных объектов", t, 0)
 
 
-PROVIDERS = ("anthropic", "openai", "gigachat", "ollama")
+PROVIDERS = ("anthropic", "openai", "deepseek", "gigachat", "ollama")
+TASKS = ("parse", "match", "letter", "facts")
 
 # ── Дневной лимит токенов ────────────────────────────────────────────────────
 # 03.11 YandexGPT за два часа обошёлся в ~$20: переоценка прогнала 200
@@ -527,8 +546,9 @@ def _call(provider, system, user, model, max_tokens, as_json, tag="", cache_syst
         return _ollama_chat(system, user, max_tokens, as_json=as_json)
     if provider == "gigachat":
         return _gigachat_chat(system, user, max_tokens, tier=tier)
-    if provider == "openai":
-        return _openai_chat(system, user, tier, max_tokens, as_json, tag=tag)
+    if provider in ("openai", "deepseek"):
+        return _openai_chat(system, user, tier, max_tokens, as_json, tag=tag,
+                            provider=provider)
     if provider == "anthropic":
         return _anthropic_text(system, user, model, max_tokens, tag=tag,
                                cache_system=cache_system)
@@ -536,24 +556,36 @@ def _call(provider, system, user, model, max_tokens, as_json, tag="", cache_syst
                          + ", ".join(PROVIDERS))
 
 
-def _raw(system, user, model, max_tokens, as_json, tag="", cache_system=False):
+# Провайдер закрыт целиком — до этого времени сразу идём в запасной.
+_down_until: dict[str, float] = {}
+
+
+def route(task: str | None) -> str:
+    """Провайдер задачи: LLM_ROUTE_<TASK>, иначе LLM_PROVIDER."""
+    cfg = get_config().settings
+    chosen = getattr(cfg, f"llm_route_{task}", "") if task in TASKS else ""
+    return (chosen or cfg.llm_provider or "anthropic").strip().lower()
+
+
+def _raw(system, user, model, max_tokens, as_json, tag="", cache_system=False, task=None):
     global _primary_down_until
     cfg = get_config().settings
-    primary = (cfg.llm_provider or "anthropic").strip().lower()
+    primary = route(task)
     fallback = (cfg.llm_fallback_provider or "").strip().lower()
     if fallback == primary:
         fallback = ""
     if tag != "llm_check":
         _check_budget()
-    if fallback and time.time() < _primary_down_until:
+    if fallback and time.time() < _down_until.get(primary, 0):
         return _call(fallback, system, user, model, max_tokens, as_json, tag, cache_system)
     try:
         return _call(primary, system, user, model, max_tokens, as_json, tag, cache_system)
     except LLMUnavailable as exc:
         if not fallback:
             raise
-        _primary_down_until = time.time() + PRIMARY_RECHECK_S
-        log.warning("[llm] основной провайдер %s закрыт (%s) — на %d мин переключаюсь "
+        _down_until[primary] = time.time() + PRIMARY_RECHECK_S
+        _primary_down_until = _down_until[primary]
+        log.warning("[llm] провайдер %s закрыт (%s) — на %d мин переключаюсь "
                     "на запасной %s", primary, str(exc)[:160], PRIMARY_RECHECK_S // 60,
                     fallback)
         return _call(fallback, system, user, model, max_tokens, as_json, tag, cache_system)
@@ -575,16 +607,17 @@ def check(provider: str) -> dict:
 
 
 def complete_text(system: str, user: str, model: str, max_tokens: int = 1024,
-                  tag: str = "", cache_system: bool = False) -> str:
+                  tag: str = "", cache_system: bool = False, task: str | None = None) -> str:
+    """task — parse | match | letter | facts: какой провайдер её делает (LLM_ROUTE_*)."""
     return _raw(system, user, model, max_tokens, as_json=False, tag=tag,
-                cache_system=cache_system)
+                cache_system=cache_system, task=task)
 
 
 def complete_json(system: str, user: str, model: str, max_tokens: int = 1024,
-                  tag: str = "", cache_system: bool = False) -> dict:
+                  tag: str = "", cache_system: bool = False, task: str | None = None) -> dict:
     """JSON-ответ. LLMError — транзиентный сбой (ретрай); ValueError — кривой JSON."""
     raw = _raw(system, user, model, max_tokens, as_json=True, tag=tag,
-               cache_system=cache_system)
+               cache_system=cache_system, task=task)
     try:
         return _loads_lenient(raw)
     except json.JSONDecodeError as exc:

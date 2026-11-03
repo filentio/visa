@@ -1023,6 +1023,15 @@ LLM_FIELDS = [
     ("OPENAI_AUTH_SCHEME", "Схема авторизации", "auth", "openai"),
     ("OPENAI_EXTRA_HEADERS", "Доп. заголовки (JSON)", "text", "openai"),
     ("OPENAI_JSON_MODE", "Режим JSON (response_format)", "bool", "openai"),
+    ("DEEPSEEK_API_KEY", "Ключ API", "secret", "deepseek"),
+    ("DEEPSEEK_MODEL", "Сильная модель", "text", "deepseek"),
+    ("DEEPSEEK_MODEL_SMALL", "Лёгкая модель", "text", "deepseek"),
+    ("DEEPSEEK_BASE_URL", "Адрес API", "text", "deepseek"),
+    # Какая задача через какого провайдера; пусто — основной.
+    ("LLM_ROUTE_PARSE", "Разбор постов", "provider_opt", "routes"),
+    ("LLM_ROUTE_MATCH", "Оценка вакансий", "provider_opt", "routes"),
+    ("LLM_ROUTE_LETTER", "Письма", "provider_opt", "routes"),
+    ("LLM_ROUTE_FACTS", "Проверка фактов в письмах", "provider_opt", "routes"),
     ("GIGACHAT_AUTH_KEY", "Ключ авторизации", "secret", "gigachat"),
     ("GIGACHAT_SCOPE", "Scope", "text", "gigachat"),
     ("GIGACHAT_MODEL", "Сильная модель", "text", "gigachat"),
@@ -1202,7 +1211,16 @@ def api_settings_llm_check():
     # Ключ вписан, а провайдер не выбран ни основным, ни запасным (03.11: ключ
     # Яндекса сохранили, а проверка показала только Anthropic). Проверяем и
     # его, чтобы было видно, что он рабочий и его осталось выбрать.
+    for task, label in (("parse", "разбор"), ("match", "оценка"), ("letter", "письма"),
+                        ("facts", "проверка фактов")):
+        name = llm.route(task)
+        if name not in chosen:
+            chosen.append(name)
+            res = llm.check(name)
+            out.append({"role": f"задача: {label}", "provider": name,
+                        "small": list(res["small"]), "big": list(res["big"])})
     configured = {"openai": bool(st.openai_api_key and st.openai_base_url),
+                  "deepseek": bool(st.deepseek_api_key),
                   "gigachat": bool(st.gigachat_auth_key),
                   "anthropic": bool(st.anthropic_api_key)}
     for name, has_key in configured.items():

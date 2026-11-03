@@ -115,3 +115,4 @@ def _apply_here(changes: dict[str, str | None]) -> None:
     llm._client = None
     llm._giga_token["value"] = None
     llm._primary_down_until = 0.0
+    llm._down_until.clear()

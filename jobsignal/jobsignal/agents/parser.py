@@ -351,7 +351,7 @@ class Parser:
         model = get_config().settings.parser_model
         try:
             raw = complete_text(SYSTEM, prompt, model, PARSER_MAX_TOKENS,
-                                tag=f"post#{post.id}")
+                                tag=f"post#{post.id}", task="parse")
         except LLMUnavailable:
             # Подкласс LLMError — пропускаем наверх до обработчика ниже, иначе
             # отказ провайдера маскируется под сбой разбора этого поста.

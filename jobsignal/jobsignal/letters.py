@@ -193,7 +193,8 @@ def fact_check(text: str, resume: str, vacancy_text: str = "") -> list[str]:
             + f"ПИСЬМО:\n{text}")
     try:
         data = complete_json(FACT_SYSTEM, user, model=get_config().settings.parser_model,
-                             max_tokens=700, tag="letter_facts", cache_system=True)
+                             max_tokens=700, tag="letter_facts", cache_system=True,
+                             task="facts")
     except Exception as exc:  # noqa: BLE001
         log.warning("[letters] проверка фактов не выполнилась: %s", exc)
         return []
@@ -257,7 +258,7 @@ def generate(role: str, company: str, vacancy_text: str, profile: str | None = N
 
     try:
         text = clean_for_channel(complete_text(system, user, model, 2000,
-                                               cache_system=True))
+                                               cache_system=True, task="letter"))
     except Exception as exc:  # noqa: BLE001
         log.warning("[letters] модель не ответила: %s", exc)
         return Letter("", channel, pname, accent, issues=[f"модель не ответила: {exc}"])
@@ -270,7 +271,7 @@ def generate(role: str, company: str, vacancy_text: str, profile: str | None = N
                 system,
                 user + "\n\nПредыдущий вариант не подошёл: " + "; ".join(issues)
                 + ". Перепиши с учётом этого.\n\nПредыдущий вариант:\n" + text,
-                model, 2000, cache_system=True))
+                model, 2000, cache_system=True, task="letter"))
             retry_issues = review(retry, channel, resume, vacancy_text)
             if len(retry_issues) <= len(issues):
                 text, issues = retry, retry_issues

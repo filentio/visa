@@ -46,6 +46,33 @@ DROP_RE = re.compile("|".join([_DROP] + [re.escape(w) for w in _extra_drop]), re
 KEEP_RE = re.compile("|".join([_KEEP] + [re.escape(w) for w in _extra_keep]), re.IGNORECASE)
 
 
+_CONTACT_RES = (
+    re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+"),                        # почта
+    re.compile(r"(?<!\w)@[A-Za-z][\w]{3,}"),                         # @телеграм
+    re.compile(r"(?:https?://)?(?:t\.me|telegram\.me)/\S+"),           # ссылки на телеграм
+    re.compile(r"\+?\d[\d\s()\-]{8,}\d"),                           # телефон
+)
+_NAME_LINE_RE = re.compile(r"^\s*[А-ЯЁA-Z][а-яёa-z\-]+(?:\s+[А-ЯЁA-Z][а-яёa-z\-]+){1,2}\s*$")
+
+
+def strip_contacts(text: str) -> str:
+    """Резюме для оценки: без ФИО в первой строке, почты, телефона и телеграма.
+
+    Оценке нужен опыт, а не контакты. Модель оценки может работать у
+    провайдера за рубежом (DeepSeek), и личные данные туда отдавать незачем.
+    Письма пишутся по полному резюме — это делает letters.py.
+    """
+    lines = (text or "").splitlines()
+    for i, line in enumerate(lines[:3]):
+        if _NAME_LINE_RE.match(line):
+            lines[i] = "[кандидат]"
+            break
+    out = "\n".join(lines)
+    for rx in _CONTACT_RES:
+        out = rx.sub("[скрыто]", out)
+    return out
+
+
 def prefilter_reason(role: str) -> str | None:
     """Почему вакансию не стоит показывать модели, или None — показывать."""
     if not PREFILTER_ON or not role:
@@ -128,8 +155,10 @@ class MatcherAgent(BaseAgent):
                     "skipped": 0, "errors": 0, "no_profiles": True}
 
         names = [p["name"] for p in profiles]
+        # Резюме без имени и контактов: для оценки они не нужны, а модель
+        # оценки может быть у провайдера за рубежом (LLM_ROUTE_MATCH=deepseek).
         profiles_block = "\n\n".join(
-            f"[{p['name']}]\n{p['cv_text'][:CV_CAP]}" for p in profiles
+            f"[{p['name']}]\n{strip_contacts(p['cv_text'])[:CV_CAP]}" for p in profiles
         )
         system = SYSTEM_TMPL.replace("{profiles}", profiles_block)
 
@@ -251,7 +280,7 @@ class MatcherAgent(BaseAgent):
                     # вакансий прогона — со второй вакансии она читается из кэша
                     data = complete_json(system, _vacancy_text(v), model=model,
                                          max_tokens=900, tag=f"vac#{v.id}",
-                                         cache_system=True)
+                                         cache_system=True, task="match")
                 except LLMUnavailable as exc:
                     # Доступа к провайдеру нет вообще — дальше по списку будет
                     # ровно то же. Оценённое сохраняем, прогон обрываем громко.
