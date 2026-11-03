@@ -565,24 +565,29 @@ def status(probe_live: bool | None = None, headless: bool = True) -> SessionStat
 # ── уведомление ──────────────────────────────────────────────────────────
 
 def _host() -> str:
-    return os.environ.get("JOBSIGNAL_HOST", "5.42.104.39")
+    return os.environ.get("JOBSIGNAL_HOST", "5.187.4.252")
 
 
 def _howto() -> str:
+    """Как перелогиниться. Входить надо ЧЕРЕЗ ТОТ ЖЕ ПРОКСИ, что у сервера:
+    hh привязывает сессию к адресу. --via-server берёт прокси с сервера и
+    ходит через SSH-туннель, а готовую сессию сам отправляет на сервер."""
     host = _host()
     return (
-        "<b>Что сделать</b> (на компьютере с экраном — на сервере дисплея "
-        "нет, hh требует пароль, SMS и капчу):\n"
-        "1. Забрать скрипт входа:\n"
-        f"<code>scp root@{host}:/root/autoapply/tools/hh_login_local.py .</code>\n"
-        "2. Поставить playwright (один раз):\n"
+        "<b>Что сделать</b> (на компьютере с экраном: на сервере дисплея нет, "
+        "а hh требует пароль, SMS и капчу).\n\n"
+        "<b>Windows</b> (PowerShell), в любой папке:\n"
+        f"<code>scp root@{host}:/opt/jobsignal_local/tools/hh_login_local.py .</code>\n"
+        "<code>py -m venv .hh; .hh\\Scripts\\pip install playwright; "
+        ".hh\\Scripts\\playwright install chromium</code>  (один раз)\n"
+        f"<code>.hh\\Scripts\\python hh_login_local.py --via-server root@{host}</code>\n\n"
+        "<b>Mac / Linux</b>:\n"
+        f"<code>scp root@{host}:/opt/jobsignal_local/tools/hh_login_local.py .</code>\n"
         "<code>python3 -m venv ~/.hh &amp;&amp; ~/.hh/bin/pip install playwright "
-        "&amp;&amp; ~/.hh/bin/playwright install chromium</code>\n"
-        "3. Войти и залить сессию — откроется окно браузера, "
-        "логинишься руками:\n"
-        f"<code>~/.hh/bin/python hh_login_local.py --upload "
-        f"root@{host}:/root/autoapply/state.json</code>\n"
-        "4. Проверить на сервере:\n"
+        "&amp;&amp; ~/.hh/bin/playwright install chromium</code>  (один раз)\n"
+        f"<code>~/.hh/bin/python hh_login_local.py --via-server root@{host}</code>\n\n"
+        "Откроется окно браузера: войди на hh как обычно. Скрипт сам сохранит "
+        "сессию и отправит её на сервер. Проверка на сервере:\n"
         "<code>cd /opt/jobsignal_local &amp;&amp; .venv/bin/python run.py "
         "hh-session --probe</code>"
     )

@@ -12,6 +12,10 @@ Playwright): cookies, по которым hh потом узнаёт нас бе
 Поэтому входить надо ЧЕРЕЗ ТОТ ЖЕ ПРОКСИ, которым ходит сервер. Скрипт берёт
 его из --proxy или из переменной HH_PROXY.
 
+Проще всего (сам возьмёт прокси с сервера и сам отправит сессию обратно):
+
+    python hh_login_local.py --via-server root@5.187.4.252
+
 Запуск на своём компьютере (не на сервере):
 
     python3 -m venv ~/.hh
@@ -92,10 +96,65 @@ def playwright_proxy(url: str | None) -> dict | None:
     return out
 
 
+TUNNEL_PORT = 18765
+
+
+def proxy_via_server(server: str) -> tuple[str, subprocess.Popen]:
+    """Прокси сервера через SSH-туннель: строку прокси берём с сервера, сами
+    подключаемся к нему с адреса сервера.
+
+    Зачем. Строку прокси с паролем руками вставлять неудобно (в PowerShell
+    ломаются кавычки и спецсимволы), а прокси принимает подключения только с
+    разрешённых адресов: 14.10 домашний адрес он отверг, и спасло ровно это —
+    туннель через сервер. Сессия при этом получается с того же выходного
+    адреса прокси, что у сервера, и hh её не гасит.
+    """
+    out = subprocess.run(
+        ["ssh", server, "grep -m1 '^HH_PROXY=' /opt/jobsignal_local/config/.env"],
+        capture_output=True, text=True, timeout=120)
+    line = (out.stdout or "").strip()
+    if out.returncode or not line:
+        raise SystemExit(f"не удалось прочитать HH_PROXY с {server}: "
+                         f"{(out.stderr or '').strip()[:200] or 'строки нет'}")
+    url = line.split("=", 1)[1].strip().strip('"').strip("'")
+    if "://" not in url:
+        url = "http://" + url
+    scheme, _, rest = url.partition("://")
+    creds, at, hostport = rest.rpartition("@")
+    if not at:
+        creds, hostport = "", rest
+    tunnel = subprocess.Popen(
+        ["ssh", "-N", "-o", "ExitOnForwardFailure=yes",
+         "-L", f"{TUNNEL_PORT}:{hostport.rstrip('/')}", server])
+    import time
+    time.sleep(4)
+    if tunnel.poll() is not None:
+        raise SystemExit("SSH-туннель не поднялся — проверь, что ssh к серверу работает")
+    local = f"{scheme}://{creds + '@' if creds else ''}127.0.0.1:{TUNNEL_PORT}"
+    print(f"прокси сервера через туннель: 127.0.0.1:{TUNNEL_PORT} → {hostport.split(':')[0]}")
+    return local, tunnel
+
+
 async def run(opts) -> int:
     from playwright.async_api import async_playwright
 
-    proxy = playwright_proxy(opts.proxy or os.environ.get("HH_PROXY"))
+    tunnel = None
+    raw_proxy = opts.proxy or os.environ.get("HH_PROXY")
+    if opts.via_server:
+        raw_proxy, tunnel = proxy_via_server(opts.via_server)
+        if not opts.upload:
+            opts.upload = f"{opts.via_server}:/root/autoapply/state.json"
+    try:
+        return await _run(opts, raw_proxy)
+    finally:
+        if tunnel is not None:
+            tunnel.terminate()
+
+
+async def _run(opts, raw_proxy) -> int:
+    from playwright.async_api import async_playwright
+
+    proxy = playwright_proxy(raw_proxy)
     out = Path(opts.out).expanduser()
     print(f"прокси: {proxy['server'] if proxy else 'НЕ ЗАДАН — сессия может быть погашена'}")
     print(f"файл сессии: {out}\n")
@@ -178,6 +237,9 @@ def main() -> int:
     ap.add_argument("--out", default="state.json", help="куда сохранить сессию")
     ap.add_argument("--upload", default=None,
                     help="root@сервер:/root/autoapply/state.json")
+    ap.add_argument("--via-server", default=None, metavar="root@СЕРВЕР",
+                    help="взять прокси с сервера и ходить через SSH-туннель к нему; "
+                         "сессия сама уедет на сервер. Самый простой способ")
     return asyncio.run(run(ap.parse_args()))
 
 
