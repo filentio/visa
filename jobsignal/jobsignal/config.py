@@ -63,7 +63,8 @@ class Settings(BaseSettings):
     compose_batch_limit: int = Field(default=20)
 
     # --- Выбор LLM-провайдера ---
-    # anthropic — облако Anthropic; ollama — локально; gigachat — Сбер (рубли, из РФ)
+    # anthropic — облако Anthropic; openai — любой OpenAI-совместимый (YandexGPT,
+    # DeepSeek, OpenAI…); gigachat — Сбер (рубли, из РФ); ollama — локально
     llm_provider: str = Field(default="anthropic")
     ollama_base_url: str = Field(default="http://localhost:11434")
     ollama_model: str = Field(default="qwen2.5:3b")
@@ -73,6 +74,27 @@ class Settings(BaseSettings):
     gigachat_scope: str = Field(default="GIGACHAT_API_PERS")  # PERS — физлица
     gigachat_model: str = Field(default="GigaChat")  # GigaChat | GigaChat-Pro | GigaChat-Max
     gigachat_verify_ssl: bool = Field(default=False)  # сертификаты НУЦ Минцифры не в trust store
+    # Лёгкая модель GigaChat для разбора постов; пусто — та же, что GIGACHAT_MODEL.
+    gigachat_model_small: str = Field(default="")
+
+    # --- OpenAI-совместимый провайдер (LLM_PROVIDER=openai) ---
+    # Через этот интерфейс работают YandexGPT (Yandex AI Studio), DeepSeek,
+    # OpenAI и большинство других. Примеры — в config/.env.example.
+    openai_base_url: str = Field(default="")
+    openai_api_key: str = Field(default="")
+    openai_model: str = Field(default="")         # сильная: оценка вакансий, письма
+    openai_model_small: str = Field(default="")   # лёгкая: разбор постов; пусто — та же
+    # Схема заголовка авторизации: Bearer (почти все) или Api-Key (Yandex Cloud).
+    openai_auth_scheme: str = Field(default="Bearer")
+    # Дополнительные заголовки JSON-объектом, например {"x-folder-id": "b1g..."}.
+    openai_extra_headers: str = Field(default="")
+    # response_format=json_object для ответов-JSON; не все провайдеры его знают.
+    openai_json_mode: bool = Field(default=False)
+
+    # Запасной провайдер: если основной закрыт (ключ, оплата, верификация),
+    # запросы идут сюда. 03.11 Anthropic закрыл доступ до верификации
+    # организации, и конвейер встал целиком. Пусто — без запасного.
+    llm_fallback_provider: str = Field(default="")
 
     # --- Поведение конвейера ---
     match_threshold: int = Field(default=70)  # минимальный % соответствия для показа

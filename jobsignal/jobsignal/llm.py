@@ -2,8 +2,14 @@
 
 Провайдер выбирается в config/.env через LLM_PROVIDER:
   - anthropic — облако Anthropic (ключ + оплата)
-  - ollama    — локальная модель на Mac (бесплатно, без сети)
+  - openai    — любой OpenAI-совместимый API: YandexGPT, DeepSeek, OpenAI…
   - gigachat  — Сбер GigaChat (из РФ, рубли, есть бесплатный лимит)
+  - ollama    — локальная модель (бесплатно, без сети)
+
+LLM_FALLBACK_PROVIDER — запасной: если основной закрыт целиком (ключ,
+оплата, верификация организации), запросы уходят туда. У каждого провайдера
+две модели: лёгкая для разбора постов (то, что агенты называют
+parser_model) и сильная для оценки вакансий и писем.
 
 Логика агентов от провайдера не зависит — переключение одной строкой в .env.
 """
@@ -140,6 +146,59 @@ def _ollama_chat(system, user, max_tokens, as_json):
     return r.json().get("message", {}).get("content", "")
 
 
+def _tier(model: str) -> str:
+    """small — разбор постов (агенты передают parser_model), big — остальное.
+
+    Агенты пишут имена моделей Anthropic; у других провайдеров свои модели,
+    поэтому имя переводится в «уровень», а уровень — в модель провайдера.
+    """
+    return "small" if model and model == get_config().settings.parser_model else "big"
+
+
+# --- OpenAI-совместимый (YandexGPT, DeepSeek, OpenAI…) ---
+
+def _openai_chat(system, user, tier, max_tokens, as_json, tag=""):
+    cfg = get_config().settings
+    if not (cfg.openai_base_url and cfg.openai_api_key and cfg.openai_model):
+        raise LLMUnavailable("OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL не заданы "
+                             "в config/.env")
+    model = (cfg.openai_model_small if tier == "small" else "") or cfg.openai_model
+    headers = {"Authorization": f"{cfg.openai_auth_scheme} {cfg.openai_api_key}",
+               "Content-Type": "application/json"}
+    if cfg.openai_extra_headers.strip():
+        try:
+            headers.update(json.loads(cfg.openai_extra_headers))
+        except ValueError as exc:
+            raise LLMUnavailable(f"OPENAI_EXTRA_HEADERS не JSON: {exc}") from exc
+    payload = {
+        "model": model,
+        "messages": [{"role": "system", "content": system},
+                     {"role": "user", "content": user}],
+        "temperature": 0.2,
+        "max_tokens": max_tokens,
+    }
+    if as_json and cfg.openai_json_mode:
+        payload["response_format"] = {"type": "json_object"}
+    url = cfg.openai_base_url.rstrip("/") + "/chat/completions"
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=180)
+    except requests.RequestException as exc:
+        raise LLMError(f"{url} недоступен: {exc}") from exc
+    if r.status_code != 200:
+        text = r.text[:300]
+        # 401/403 — ключ, 402 — оплата; insufficient_quota OpenAI отдаёт с 429.
+        fatal = r.status_code in (401, 402, 403) or _is_unavailable(Exception(text))
+        raise (LLMUnavailable if fatal else LLMError)(f"HTTP {r.status_code}: {text}")
+    data = r.json()
+    usage = data.get("usage") or {}
+    log.info("[usage]%s model=%s in=%s out=%s", f" {tag}" if tag else "", model,
+             usage.get("prompt_tokens", "?"), usage.get("completion_tokens", "?"))
+    try:
+        return data["choices"][0]["message"]["content"] or ""
+    except (KeyError, IndexError, TypeError) as exc:
+        raise LLMError(f"неожиданный ответ: {str(data)[:200]}") from exc
+
+
 # --- GigaChat (Сбер) ---
 
 GIGA_OAUTH = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
@@ -181,15 +240,16 @@ def _gigachat_token():
     return _giga_token["value"]
 
 
-def _gigachat_chat(system, user, max_tokens):
+def _gigachat_chat(system, user, max_tokens, tier="big"):
     cfg = get_config().settings
     token = _gigachat_token()
+    model = (cfg.gigachat_model_small if tier == "small" else "") or cfg.gigachat_model
     try:
         r = requests.post(
             GIGA_CHAT,
             headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
             json={
-                "model": cfg.gigachat_model,
+                "model": model,
                 "messages": [{"role": "system", "content": system},
                              {"role": "user", "content": user}],
                 "temperature": 0.1,
@@ -353,14 +413,63 @@ def _loads_lenient_many(text: str) -> list[dict]:
     raise json.JSONDecodeError("массив без пригодных объектов", t, 0)
 
 
-def _raw(system, user, model, max_tokens, as_json, tag="", cache_system=False):
-    provider = get_config().settings.llm_provider
+PROVIDERS = ("anthropic", "openai", "gigachat", "ollama")
+
+# Основной провайдер закрыт целиком — до этого времени сразу идём в запасной,
+# не тратя на каждый запрос заведомо отказной вызов.
+_primary_down_until = 0.0
+PRIMARY_RECHECK_S = 15 * 60
+
+
+def _call(provider, system, user, model, max_tokens, as_json, tag="", cache_system=False):
+    tier = _tier(model)
     if provider == "ollama":
         return _ollama_chat(system, user, max_tokens, as_json=as_json)
     if provider == "gigachat":
-        return _gigachat_chat(system, user, max_tokens)
-    return _anthropic_text(system, user, model, max_tokens, tag=tag,
-                           cache_system=cache_system)
+        return _gigachat_chat(system, user, max_tokens, tier=tier)
+    if provider == "openai":
+        return _openai_chat(system, user, tier, max_tokens, as_json, tag=tag)
+    if provider == "anthropic":
+        return _anthropic_text(system, user, model, max_tokens, tag=tag,
+                               cache_system=cache_system)
+    raise LLMUnavailable(f"неизвестный LLM_PROVIDER={provider!r}: нужен один из "
+                         + ", ".join(PROVIDERS))
+
+
+def _raw(system, user, model, max_tokens, as_json, tag="", cache_system=False):
+    global _primary_down_until
+    cfg = get_config().settings
+    primary = (cfg.llm_provider or "anthropic").strip().lower()
+    fallback = (cfg.llm_fallback_provider or "").strip().lower()
+    if fallback == primary:
+        fallback = ""
+    if fallback and time.time() < _primary_down_until:
+        return _call(fallback, system, user, model, max_tokens, as_json, tag, cache_system)
+    try:
+        return _call(primary, system, user, model, max_tokens, as_json, tag, cache_system)
+    except LLMUnavailable as exc:
+        if not fallback:
+            raise
+        _primary_down_until = time.time() + PRIMARY_RECHECK_S
+        log.warning("[llm] основной провайдер %s закрыт (%s) — на %d мин переключаюсь "
+                    "на запасной %s", primary, str(exc)[:160], PRIMARY_RECHECK_S // 60,
+                    fallback)
+        return _call(fallback, system, user, model, max_tokens, as_json, tag, cache_system)
+
+
+def check(provider: str) -> dict:
+    """Проверка провайдера: отвечают ли обе модели. Для run.py llm-check."""
+    cfg = get_config().settings
+    out = {}
+    for tier, model in (("small", cfg.parser_model), ("big", cfg.anthropic_model)):
+        try:
+            text = _call(provider, "Отвечай одним словом.", "Скажи: ok", model, 20,
+                         as_json=False, tag="llm_check")
+            out[tier] = ("ok", (text or "").strip()[:40])
+        except Exception as exc:  # noqa: BLE001
+            kind = "закрыт" if isinstance(exc, LLMUnavailable) else "сбой"
+            out[tier] = (kind, f"{type(exc).__name__}: {str(exc)[:200]}")
+    return out
 
 
 def complete_text(system: str, user: str, model: str, max_tokens: int = 1024,

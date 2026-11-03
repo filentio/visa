@@ -23,6 +23,7 @@ COMMANDS = (
     "tg-outreach",            # NEW: отклик в телеграм полуавтоматом
     "proxy-traffic",          # NEW: расход трафика прокси; --topup после пополнения
     "tg-scout",               # NEW: поиск новых каналов с вакансиями и надзор за старыми
+    "llm-check",              # NEW: отвечает ли модель (основной и запасной провайдер)
     "channels",               # NEW: list channels
     "pipeline", "status", "dashboard", "serve",
 )
@@ -415,6 +416,23 @@ def main():
         print(f"Очередь: {rep['queue']} | предложено: {rep['offered']}"
               + (f" | не вышло: {rep['failed']}" if rep.get("failed") else "")
               + (f" | осталось в очереди: {left}" if left > 0 else ""))
+
+    elif cmd == "llm-check":
+        # Отвечают ли обе модели (лёгкая — разбор, сильная — оценка и письма)
+        # у основного и запасного провайдера. Ключи на экран не выводятся.
+        from jobsignal import llm
+        from jobsignal.config import get_config
+        st = get_config().settings
+        names = [st.llm_provider] + ([st.llm_fallback_provider]
+                                     if st.llm_fallback_provider else [])
+        bad = False
+        for i, name in enumerate(names):
+            print(f"{'основной' if i == 0 else 'запасной'}: {name}")
+            for tier, (kind, detail) in llm.check(name.strip().lower()).items():
+                label = "лёгкая (разбор)" if tier == "small" else "сильная (оценка, письма)"
+                print(f"  {label:26} {'✅' if kind == 'ok' else '❌'} {kind}: {detail}")
+                bad = bad or (kind != "ok" and i == len(names) - 1)
+        sys.exit(1 if bad else 0)
 
     elif cmd == "tg-scout":
         # Раз в неделю по таймеру. --dry-run: показать, что нашлось и какое
