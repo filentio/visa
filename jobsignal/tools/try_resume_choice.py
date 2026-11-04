@@ -69,7 +69,16 @@ async def main() -> int:
         await agent._load_resume_map(page)
         print("резюме по профилям:", {k: v["title"] for k, v in agent._resume_map.items()})
 
-        await page.goto(item["url"], wait_until="domcontentloaded")
+        for attempt in (1, 2, 3):
+            try:
+                await page.goto(item["url"], wait_until="domcontentloaded")
+                break
+            except Exception as exc:  # noqa: BLE001 — прокси медленный
+                print(f"вакансия не открылась (попытка {attempt}/3): "
+                      f"{str(exc).splitlines()[0]}")
+                if attempt == 3:
+                    print("прокси не отвечает — проверь остаток трафика у провайдера")
+                    return 1
         await page.wait_for_timeout(3000)
         if await agent._visible(page, SEL["already_applied"], timeout=1.5):
             print("на эту вакансию отклик уже есть — возьми другую")
