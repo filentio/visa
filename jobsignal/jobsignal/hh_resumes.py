@@ -134,12 +134,29 @@ def write_cache(resumes: dict[str, str]) -> None:
         log.warning("[hh_resumes] кэш не записан: %s", exc)
 
 
+# Карточка резюме на /applicant/resumes — это ссылка целиком: тип занятости
+# перед названием, доход и формат работы после. Оставляем само название.
+_CARD_HEAD_RE = re.compile(
+    r"^(?:permanent job|temporary job|part[- ]time job|internship|project work|"
+    r"постоянная работа|временная работа|частичная занятость|стажировка|"
+    r"проектная работа)\s+", re.I)
+_CARD_TAIL_RE = re.compile(
+    r"\s+(?:income level|уровень дохода|доход не указан|зарплата не указана|"
+    r"\d[\d\s ]*(?:₽|руб|\$|€)).*$", re.I)
+
+
+def clean_title(text: str) -> str:
+    t = " ".join((text or "").split())
+    t = _CARD_HEAD_RE.sub("", t)
+    return _CARD_TAIL_RE.sub("", t).strip() or t
+
+
 async def account_resumes(page, use_cache: bool = True) -> dict[str, str]:
     """{hash: название} резюме аккаунта со страницы /applicant/resumes."""
     if use_cache:
         cached = read_cache()
         if cached:
-            return cached
+            return {h: clean_title(t) for h, t in cached.items()}
     await page.goto("https://hh.ru/applicant/resumes", wait_until="domcontentloaded")
     found: dict[str, str] = {}
     for _ in range(12):                       # список дорисовывается скриптом
@@ -150,8 +167,10 @@ async def account_resumes(page, use_cache: bool = True) -> dict[str, str]:
             except Exception:  # noqa: BLE001 — элемент перерисовался
                 continue
             m = RESUME_HREF_RE.search(href)
-            if m and len(text) > 3 and len(text) > len(found.get(m.group(1), "")):
-                found[m.group(1)] = text[:150]
+            if m and len(text) > 3:
+                text = clean_title(text)[:150]
+                if len(text) > len(found.get(m.group(1), "")):
+                    found[m.group(1)] = text
         if found:
             break
         await page.wait_for_timeout(1000)
@@ -172,7 +191,8 @@ def match_profiles(resumes: dict[str, str]) -> tuple[dict[str, dict], list[str]]
         hits = [(h, t) for h, t in resumes.items()
                 if p.hh_resume_title.lower() in t.lower()]
         if len(hits) == 1:
-            mapping[p.key] = {"hash": hits[0][0], "title": hits[0][1]}
+            mapping[p.key] = {"hash": hits[0][0], "title": hits[0][1],
+                              "key": p.hh_resume_title}
         elif not hits:
             problems.append(f"профилю «{p.name}» не нашлось резюме на hh со словами "
                             f"«{p.hh_resume_title}»")

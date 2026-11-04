@@ -1496,12 +1496,17 @@ class HHApplyAgent(BaseAgent):
                             "проверь его статус")
             return None, self._attempt(item, "", Result.RESUME_UNAVAILABLE,
                                        f"резюме «{target['title']}»: {why}")
-        choice = {"id": rid, "hash": target["hash"], "title": target["title"],
+        # Чем узнавать резюме в форме отклика: название из состояния страницы
+        # (если hh его там отдал) и слова профиля hh_resume_title — по ним
+        # резюме уже однозначно сопоставлено. Для чужих резюме — то же самое.
+        own = [vr.resumes.get(rid, {}).get("title") or "", target.get("key") or ""]
+        others = ([r.get("title") or "" for k, r in vr.resumes.items() if k != rid]
+                  + [v.get("key") or "" for v in self._resume_map.values()
+                     if v["hash"] != target["hash"]])
+        choice = {"id": rid, "hash": target["hash"],
+                  "title": vr.resumes.get(rid, {}).get("title") or target["title"],
                   "alone": vr.unused == [rid],
-                  "others": [r["title"] for k, r in vr.resumes.items()
-                             if k != rid and r.get("title")]
-                  + [v["title"] for k, v in self._resume_map.items()
-                     if v["hash"] != target["hash"]]}
+                  "marks": [m for m in own if m], "others": [o for o in others if o]}
         return choice, None
 
     async def _select_resume(self, page, choice: dict) -> bool:
@@ -1522,12 +1527,18 @@ class HHApplyAgent(BaseAgent):
                 };
               });
             }""", choice)
-        title = " ".join(choice["title"].split()).lower()
-        others = [" ".join(o.split()).lower() for o in choice["others"] if o]
-        hits = [f for f in found
-                if f["val"] in (choice["id"], choice["hash"])
-                or (title and title in f["label"]
-                    and not any(o and o not in title and o in f["label"] for o in others))]
+        def norm(x: str) -> str:
+            return " ".join((x or "").split()).lower()
+        marks = [norm(m) for m in choice.get("marks") or [choice["title"]] if m]
+        others = [norm(o) for o in choice["others"] if o]
+
+        def ours(text: str) -> bool:
+            """Текст говорит о нашем резюме и ни об одном чужом."""
+            return any(m in text and not any(o not in m and o in text for o in others)
+                       for m in marks)
+
+        by_value = [f for f in found if f["val"] in (choice["id"], choice["hash"])]
+        hits = by_value or [f for f in found if ours(f["label"])]
         sel = "input[type=radio], [role=radio], [role=option], option"
         if len(hits) == 1:
             hit = hits[0]
@@ -1564,9 +1575,7 @@ class HHApplyAgent(BaseAgent):
             """() => [...document.querySelectorAll(
                  '[role=dialog], [data-qa*="popup"], [data-qa*="modal"], form')]
                .map(e => e.innerText || '').join(' ')""")
-        text = " ".join((dialog_text or "").split()).lower()
-        return bool(title and title in text
-                    and not any(o and o not in title and o in text for o in others))
+        return ours(norm(dialog_text))
 
     async def _verify_resume(self, page, item: dict, choice: dict) -> str:
         """После отправки: каким резюме hh записал отклик. Пустая строка —
