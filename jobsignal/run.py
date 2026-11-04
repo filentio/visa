@@ -25,6 +25,7 @@ COMMANDS = (
     "proxy-traffic",          # NEW: расход трафика прокси; --topup после пополнения
     "tg-scout",               # NEW: поиск новых каналов с вакансиями и надзор за старыми
     "llm-check",              # NEW: отвечает ли модель (основной и запасной провайдер)
+    "llm-use",                # NEW: все задачи модели на одного провайдера
     "channels",               # NEW: list channels
     "pipeline", "status", "dashboard", "serve",
 )
@@ -484,6 +485,39 @@ def main():
         print(f"Очередь: {rep['queue']} | предложено: {rep['offered']}"
               + (f" | не вышло: {rep['failed']}" if rep.get("failed") else "")
               + (f" | осталось в очереди: {left}" if left > 0 else ""))
+
+    elif cmd == "llm-use":
+        """Все задачи модели — одному провайдеру, без запасного.
+
+        run.py llm-use deepseek               — основной DeepSeek, маршруты сброшены
+        run.py llm-use deepseek --drop-openai — и стереть ключ OpenAI-совместимого
+                                                (Яндекса), чтобы его не вызвало ничто
+        """
+        import argparse
+        ap = argparse.ArgumentParser(prog="run.py llm-use")
+        ap.add_argument("provider")
+        ap.add_argument("--drop-openai", action="store_true")
+        opts = ap.parse_args(sys.argv[2:])
+        from jobsignal import env_store, llm
+        if opts.provider not in llm.PROVIDERS:
+            print(f"провайдер — один из: {', '.join(llm.PROVIDERS)}")
+            sys.exit(2)
+        if opts.drop_openai and opts.provider == "openai":
+            print("--drop-openai стирает ключ того же провайдера — так нельзя")
+            sys.exit(2)
+        changes = {"LLM_PROVIDER": opts.provider, "LLM_FALLBACK_PROVIDER": None,
+                   "LLM_ROUTE_PARSE": None, "LLM_ROUTE_MATCH": None,
+                   "LLM_ROUTE_LETTER": None, "LLM_ROUTE_FACTS": None}
+        if opts.drop_openai:
+            changes.update({"OPENAI_API_KEY": None, "OPENAI_BASE_URL": None,
+                            "OPENAI_MODEL": None, "OPENAI_MODEL_SMALL": None,
+                            "OPENAI_EXTRA_HEADERS": None})
+        env_store.update(changes)
+        print(f"все задачи модели → {opts.provider}; запасного нет"
+              + ("; ключ OpenAI-совместимого стёрт" if opts.drop_openai else ""))
+        print("копия прежнего config/.env — рядом, .env.bak-<время>")
+        print("службы перечитают настройки при следующем запуске; бот и кабинет:")
+        print("  systemctl restart jobsignal-bot jobsignal-dashboard")
 
     elif cmd == "llm-check":
         # Отвечают ли обе модели (лёгкая — разбор, сильная — оценка и письма)

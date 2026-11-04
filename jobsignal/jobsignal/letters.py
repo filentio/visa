@@ -236,7 +236,11 @@ def generate(role: str, company: str, vacancy_text: str, profile: str | None = N
     accent = norm_accent(accent)
     prof = profiles.resolve(profile)
     pname = prof.name if prof else (profile or "")
-    resume = _resume_text(prof.key) if prof else ""
+    # Без ФИО, телефона, почты и телеграма: письму они не нужны (подписи в
+    # письме нет, контакты hh показывает сам), а модель писем может работать
+    # у зарубежного провайдера (DeepSeek) — личные данные туда не отдаём.
+    from jobsignal.agents.matcher import strip_contacts
+    resume = strip_contacts(_resume_text(prof.key)) if prof else ""
     if not resume.strip():
         # Без резюме модель вынуждена выдумывать — письма не будет вовсе.
         log.error("[letters] нет текста резюме для профиля «%s» — письмо не пишем", pname)

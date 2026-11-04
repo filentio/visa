@@ -46,7 +46,8 @@ def derive(resume_text: str) -> dict:
     if len((resume_text or "").strip()) < 300:
         raise ValueError("из PDF извлеклось слишком мало текста — это скан или "
                          "защищённый файл")
-    data = complete_json(SYSTEM, f"РЕЗЮМЕ:\n{resume_text[:12000]}",
+    from jobsignal.agents.matcher import strip_contacts
+    data = complete_json(SYSTEM, f"РЕЗЮМЕ:\n{strip_contacts(resume_text)[:12000]}",
                          model=get_config().settings.anthropic_model,
                          max_tokens=900, tag="profile_from_resume")
     name = str(data.get("name") or "").strip()[:80]
