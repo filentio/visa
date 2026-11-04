@@ -18,6 +18,7 @@ COMMANDS = (
     "hh-collect", "find-channels",          # NEW: search tgstat/telemetr
     "hh-apply", "hh-preview",                # NEW: автоотклик на hh.ru
     "hh-session",             # NEW: жива ли сессия hh.ru и надолго ли
+    "hh-resumes",             # NEW: какое резюме hh к какому профилю; пауза автоотклика
     "hh-replies",             # NEW: учёт ответов на отклики hh.ru
     "tg-watch",               # NEW: сторож входящих в телеграме
     "tg-outreach",            # NEW: отклик в телеграм полуавтоматом
@@ -279,6 +280,73 @@ def main():
             print(f"@{c.handle:<29} {(c.title or ''):<30} {(c.niche or ''):<12} {c.source or 'manual'}")
         print(f"\nИтого: {len(chs)} активных каналов")
         s.close()
+
+    elif cmd == "hh-resumes":
+        """Резюме аккаунта hh и их профили; пауза автоотклика из-за резюме.
+
+        Без флагов — из кэша (если свежий), иначе со страницы hh.
+        --refresh — перечитать список резюме на hh (через прокси)
+        --unblock — снять паузу после отклика не с тем резюме
+        """
+        import argparse
+        import asyncio
+        ap = argparse.ArgumentParser(prog="run.py hh-resumes")
+        ap.add_argument("--refresh", action="store_true")
+        ap.add_argument("--unblock", action="store_true")
+        opts = ap.parse_args(sys.argv[2:])
+
+        from jobsignal import hh_resumes, hh_session, profiles
+        if opts.unblock:
+            print("пауза снята" if hh_resumes.unblock() else "паузы не было")
+            from jobsignal.agents.hh_apply import _resume_problem_clear
+            _resume_problem_clear()
+            return
+
+        found = None if opts.refresh else hh_resumes.read_cache()
+        if not found:
+            lock = _take_hh_lock()
+            if lock is None:
+                print(f"сейчас идёт другая работа с hh.ru (замок {HH_LOCK_PATH}) — "
+                      "повтори через пару минут")
+                sys.exit(1)
+
+            async def _fetch():
+                from playwright.async_api import async_playwright
+                path = hh_session.state_path()
+                async with async_playwright() as pw:
+                    br = await pw.chromium.launch(headless=True,
+                                                  proxy=hh_session.playwright_proxy())
+                    ctx = await br.new_context(
+                        storage_state=str(path) if path.exists() else None,
+                        locale="ru-RU", viewport={"width": 1440, "height": 900})
+                    ctx.set_default_timeout(60000)
+                    await hh_session.block_heavy(ctx, "hh-resumes")
+                    page = await ctx.new_page()
+                    try:
+                        return await hh_resumes.account_resumes(page, use_cache=False)
+                    finally:
+                        await br.close()
+
+            found = asyncio.run(_fetch())
+            from jobsignal import proxy_meter
+            proxy_meter.flush()
+        print("резюме на hh:")
+        for h, t in (found or {}).items():
+            print(f"  «{t}»  ({h[:10]}…)")
+        if not found:
+            print("  не найдены — проверь сессию: run.py hh-session --probe")
+        mapping, problems = hh_resumes.match_profiles(found or {})
+        print("\nпрофили:")
+        for p in profiles.all_profiles():
+            m = mapping.get(p.key)
+            print(f"  {p.key} «{p.name}» (ищем «{p.hh_resume_title or '—'}») → "
+                  + (f"«{m['title']}»" if m else "НЕ СОПОСТАВЛЕНО"))
+        for pr in problems:
+            print(f"  ⚠ {pr}")
+        b = hh_resumes.blocked()
+        print("\nавтоотклик: " + (f"НА ПАУЗЕ с {b.get('at')}: {b.get('reason')}\n"
+                                  "  снять: run.py hh-resumes --unblock" if b
+                                  else "пауз из-за резюме нет"))
 
     elif cmd == "hh-session":
         """Состояние сессии hh.ru.

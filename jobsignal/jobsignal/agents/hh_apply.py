@@ -43,7 +43,7 @@ from typing import Any
 
 from sqlalchemy import text as sql_text
 
-from .. import hh_session
+from .. import hh_resumes, hh_session
 from ..db import Vacancy, VacancyStatus, get_session_factory
 from ..ratelimit import rate_status
 from .base import BaseAgent
@@ -283,6 +283,10 @@ class Result(str, enum.Enum):
     NO_LETTER_FIELD = "no_letter_field"
     NO_SUBMIT = "no_submit"
     UNCONFIRMED = "unconfirmed"            # submit нажат, подтверждения нет
+    # Резюме профиля hh для этой вакансии не предлагает — не отправляем.
+    RESUME_UNAVAILABLE = "resume_unavailable"
+    # В форме несколько резюме, а выбрать нужное не удалось — не отправляем.
+    NO_RESUME_CHOICE = "no_resume_choice"
     FAILED = "failed"
 
     @property
@@ -380,11 +384,37 @@ def _net_fail_bump() -> int:
     return n
 
 
-def _resume_choice_pending() -> bool:
-    """Нужен выбор резюме на hh, а он ещё не включён после проверки."""
-    from jobsignal import profiles
-    titled = [p for p in profiles.all_profiles() if p.hh_resume_title]
-    return len(titled) > 1 and os.environ.get("HH_RESUME_CHOICE", "").strip() != "ready"
+def _resume_choice_off() -> bool:
+    """Аварийный выключатель: HH_RESUME_CHOICE=off ставит боевые отклики на
+    паузу, если профилей несколько (выбор резюме не доверяем)."""
+    return (os.environ.get("HH_RESUME_CHOICE", "").strip().lower()
+            in ("off", "0", "no", "false"))
+
+
+RESUME_PROBLEM_FILE = Path(os.environ.get("HH_RESUME_PROBLEM_FILE",
+                                          "data/hh_resume_problem.txt"))
+
+
+def _resume_problem_is_new(text: str) -> bool:
+    """Сообщать о проблеме с резюме один раз, а не каждые 5 минут таймера."""
+    try:
+        if RESUME_PROBLEM_FILE.read_text(encoding="utf-8") == text:
+            return False
+    except OSError:
+        pass
+    try:
+        RESUME_PROBLEM_FILE.parent.mkdir(parents=True, exist_ok=True)
+        RESUME_PROBLEM_FILE.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        log.warning("[hh_apply] отметка о проблеме с резюме не записана: %s", exc)
+    return True
+
+
+def _resume_problem_clear() -> None:
+    try:
+        RESUME_PROBLEM_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 # Попыток записать итог по вакансии, если база занята другим процессом.
@@ -567,6 +597,11 @@ class HHApplyAgent(BaseAgent):
         # «эту вакансию hh не отдаёт» от «hh не отдаёт ничего»: во втором
         # случае вычищать очередь по 403 нельзя.
         self._page_read = False
+        # Профиль → резюме на hh ({ключ: {hash, title}}); None — профиль один
+        # и выбирать нечего (см. jobsignal/hh_resumes.py).
+        self._resume_map: dict[str, dict] | None = None
+        # Причина остановить прогон из-за резюме (не то ушло, выбрать нельзя).
+        self._resume_stop = ""
 
     # --- публичный вход ---------------------------------------------------
 
@@ -1034,19 +1069,25 @@ class HHApplyAgent(BaseAgent):
             queue = self._queue(session)
             report.queue_size = len(queue)
 
-            # 23.10: у кандидата на hh два резюме под два профиля. Пока выбор
-            # нужного резюме в форме отклика не проверен на живой странице
-            # (tools/probe_hh_resume_choice.py), боевые отправки стоят: иначе
-            # hh молча отправит резюме по умолчанию и под чужой профиль.
-            # Предпросмотр (dry-run) ничего не нажимает, его не держим.
-            if not self.dry_run and queue and _resume_choice_pending():
-                report.stopped_reason = (
-                    "автоотклик на паузе: профилей с отдельным резюме на hh "
-                    "несколько, а выбор резюме в форме отклика ещё не проверен "
-                    "(tools/probe_hh_resume_choice.py; после проверки "
-                    "HH_RESUME_CHOICE=ready в config/.env)")
-                log.warning("[hh_apply] %s", report.stopped_reason)
-                return report
+            # С 23.10 у кандидата на hh два резюме под два профиля, и отклик
+            # должен уходить с резюме своего профиля (jobsignal/hh_resumes.py).
+            # Две паузы для боевого режима: ручной выключатель и пауза после
+            # отклика, ушедшего не с тем резюме. Предпросмотр ничего не
+            # нажимает — его не держим.
+            if not self.dry_run and queue and hh_resumes.choice_needed():
+                if _resume_choice_off():
+                    report.stopped_reason = (
+                        "автоотклик на паузе: HH_RESUME_CHOICE=off в config/.env")
+                    log.warning("[hh_apply] %s", report.stopped_reason)
+                    return report
+                blocked = hh_resumes.blocked()
+                if blocked:
+                    report.stopped_reason = (
+                        f"автоотклик на паузе с {blocked.get('at')}: "
+                        f"{blocked.get('reason')}. Проверить и снять: "
+                        "run.py hh-resumes, затем run.py hh-resumes --unblock")
+                    log.warning("[hh_apply] %s", report.stopped_reason)
+                    return report
 
             # Здесь стояла проверка section_blocked() на requests: она должна
             # была экономить запуски Chromium при блокировке. 03.10 выяснилось,
@@ -1127,6 +1168,12 @@ class HHApplyAgent(BaseAgent):
                     hh_session.report_dead(self._session_detail)
                     return report
 
+                if hh_resumes.choice_needed():
+                    stop = await self._load_resume_map(page)
+                    if stop:
+                        report.stopped_reason = stop
+                        return report
+
                 for item in queue:
                     if attempts_left <= 0:
                         report.stopped_reason = "бюджет прогона исчерпан"
@@ -1174,6 +1221,13 @@ class HHApplyAgent(BaseAgent):
                     # квоте нет.
                     if attempt.result.sent and not self.dry_run:
                         self._notify_sent(attempt)
+
+                    if self._resume_stop:
+                        # Сообщение в телеграм уже ушло (_pause) — без кода 1
+                        # и второй тревоги OnFailure.
+                        report.stopped_reason = self._resume_stop
+                        log.error("[hh_apply] %s", report.stopped_reason)
+                        break
 
                     if attempt.result is Result.LIMIT_REACHED:
                         # Лимит, а не поломка: очередь цела, вакансия остаётся
@@ -1374,6 +1428,182 @@ class HHApplyAgent(BaseAgent):
         self._session_ok = True
         return True
 
+    # --- выбор резюме -----------------------------------------------------
+
+    async def _load_resume_map(self, page) -> str:
+        """Сопоставить профили с резюме аккаунта. Вернуть причину остановки
+        прогона или пустую строку."""
+        try:
+            found = await hh_resumes.account_resumes(page)
+        except Exception as exc:  # noqa: BLE001 — сеть, прокси
+            found = {}
+            log.warning("[hh_apply] список резюме не прочитан: %s", exc)
+        if not found:
+            # Пустой список — скорее сеть или сессия, чем резюме: не тревожим,
+            # следующий прогон и ежечасная проверка сессии покажут.
+            return "не удалось прочитать список резюме на hh — прогон пропущен"
+        mapping, problems = hh_resumes.match_profiles(found)
+        self._resume_map = mapping
+        if problems and not self.dry_run:
+            text = ("резюме на hh не сопоставлены с профилями: "
+                    + "; ".join(problems)
+                    + ". Резюме на hh: "
+                    + "; ".join(f"«{t}»" for t in found.values()))
+            if _resume_problem_is_new(text):
+                from .notify_bot import _esc
+                self._notify(
+                    "⏸ <b>Автоотклик на hh на паузе</b>\n" + _esc(text)
+                    + "\nПоправь hh_resume_title профиля на странице «Резюме» "
+                    "кабинета или название резюме на hh. Проверка: "
+                    "run.py hh-resumes --refresh", about="резюме")
+            return text
+        if not problems:
+            _resume_problem_clear()
+        log.info("[hh_apply] резюме по профилям: %s", "; ".join(
+            f"{k} → «{v['title']}»" for k, v in mapping.items()))
+        return ""
+
+    async def _pick_resume(self, page, item: dict) -> tuple[dict | None, Attempt | None]:
+        """Какое резюме отправлять на эту вакансию — по состоянию страницы,
+        до любого клика. Вернуть (выбор, None) или (None, итог-отказ)."""
+        from jobsignal import profiles
+
+        prof = profiles.resolve(item["profile"])
+        target = self._resume_map.get(prof.key) if prof else None
+        if not target:
+            return None, self._attempt(
+                item, "", Result.RESUME_UNAVAILABLE,
+                f"для профиля «{item['profile']}» резюме на hh не сопоставлено")
+        vr = hh_resumes.vacancy_resumes(hh_resumes.page_state(await page.content()),
+                                        item["key"])
+        if vr is None:
+            return None, self._attempt(
+                item, "", Result.NO_RESUME_CHOICE,
+                "в состоянии страницы нет списка резюме для отклика — выбрать "
+                "резюме не на чем", await self._screenshot(item["id"], "no-resume-state"))
+        rid = vr.id_by_hash(target["hash"])
+        if rid is not None and rid in vr.used:
+            return None, self._attempt(item, "", Result.ALREADY_APPLIED,
+                                       f"отклик резюме «{target['title']}» уже есть")
+        if rid is None or rid not in vr.unused:
+            why = ("скрыто" if rid in vr.hidden else
+                   "не заполнено до конца" if rid in vr.unfinished else
+                   "hh не предлагает его для этой вакансии")
+            if rid in vr.hidden or rid in vr.unfinished:
+                # Свойство резюме, а не вакансии: дальше будет то же самое.
+                self._pause(f"резюме «{target['title']}» {why} — отклики "
+                            "этим резюме невозможны. Открой резюме на hh и "
+                            "проверь его статус")
+            return None, self._attempt(item, "", Result.RESUME_UNAVAILABLE,
+                                       f"резюме «{target['title']}»: {why}")
+        choice = {"id": rid, "hash": target["hash"], "title": target["title"],
+                  "alone": vr.unused == [rid],
+                  "others": [r["title"] for k, r in vr.resumes.items()
+                             if k != rid and r.get("title")]
+                  + [v["title"] for k, v in self._resume_map.items()
+                     if v["hash"] != target["hash"]]}
+        return choice, None
+
+    async def _select_resume(self, page, choice: dict) -> bool:
+        """Выбрать резюме в форме отклика. True — выбор подтверждён."""
+        found = await page.evaluate(
+            """(t) => {
+              const norm = s => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+              const sel = 'input[type=radio], [role=radio], [role=option], option';
+              return [...document.querySelectorAll(sel)].map((e, i) => {
+                const box = e.closest('label') || e.parentElement || e;
+                return {
+                  i, tag: e.tagName.toLowerCase(),
+                  val: String(e.value || e.getAttribute('data-value') || ''),
+                  label: norm(box.innerText || e.textContent).slice(0, 300),
+                  checked: !!(e.checked || e.selected
+                              || e.getAttribute('aria-checked') === 'true'
+                              || e.getAttribute('aria-selected') === 'true'),
+                };
+              });
+            }""", choice)
+        title = " ".join(choice["title"].split()).lower()
+        others = [" ".join(o.split()).lower() for o in choice["others"] if o]
+        hits = [f for f in found
+                if f["val"] in (choice["id"], choice["hash"])
+                or (title and title in f["label"]
+                    and not any(o and o not in title and o in f["label"] for o in others))]
+        sel = "input[type=radio], [role=radio], [role=option], option"
+        if len(hits) == 1:
+            hit = hits[0]
+            el = page.locator(sel).nth(hit["i"])
+            try:
+                if hit["tag"] == "option":
+                    parent = el.locator("xpath=..")
+                    await parent.select_option(value=hit["val"] or None,
+                                               label=None if hit["val"] else hit["label"])
+                elif hit["tag"] == "input":
+                    await el.check(force=True)
+                else:
+                    await el.click()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("[hh_apply] клик по резюме не прошёл: %s", exc)
+                return False
+            await page.wait_for_timeout(400)
+            ok = await page.evaluate(
+                """([sel, i]) => {
+                  const e = document.querySelectorAll(sel)[i];
+                  return !!e && !!(e.checked || e.selected
+                    || e.getAttribute('aria-checked') === 'true'
+                    || e.getAttribute('aria-selected') === 'true');
+                }""", [sel, hit["i"]])
+            return bool(ok)
+        if hits:
+            log.warning("[hh_apply] резюме «%s» совпало с %d элементами формы",
+                        choice["title"], len(hits))
+            return False
+        # Переключателей нет: форма показывает одно выбранное резюме карточкой.
+        # Доверяем, только если в окне отклика есть название нужного резюме и
+        # нет названий других; после отправки всё равно сверяемся со страницей.
+        dialog_text = await page.evaluate(
+            """() => [...document.querySelectorAll(
+                 '[role=dialog], [data-qa*="popup"], [data-qa*="modal"], form')]
+               .map(e => e.innerText || '').join(' ')""")
+        text = " ".join((dialog_text or "").split()).lower()
+        return bool(title and title in text
+                    and not any(o and o not in title and o in text for o in others))
+
+    async def _verify_resume(self, page, item: dict, choice: dict) -> str:
+        """После отправки: каким резюме hh записал отклик. Пустая строка —
+        нужным; иначе описание расхождения (и пауза боевых откликов)."""
+        try:
+            await page.goto(item["url"], wait_until="domcontentloaded")
+            await page.wait_for_timeout(1500)
+            vr = hh_resumes.vacancy_resumes(
+                hh_resumes.page_state(await page.content()), item["key"])
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[hh_apply] #%s: резюме после отправки не проверено: %s",
+                        item["id"], exc)
+            return ""
+        if vr is None or not vr.used:
+            log.warning("[hh_apply] #%s: после отправки hh не показал, каким "
+                        "резюме отклик — не проверено", item["id"])
+            return ""
+        if choice["id"] in vr.used:
+            return ""
+        wrong = ", ".join(f"«{vr.resumes.get(r, {}).get('title') or r}»" for r in vr.used)
+        problem = (f"отклик на {item['url']} ушёл с резюме {wrong} вместо "
+                   f"«{choice['title']}»")
+        self._pause(problem + ". Проверь отклик на hh", title="⚠️ Отклик ушёл не с тем резюме")
+        return problem
+
+    def _pause(self, reason: str, title: str = "⏸ Автоотклик на hh на паузе") -> None:
+        """Остановить прогон из-за резюме; в боевом режиме — и следующие
+        прогоны, до ручного снятия паузы. Сообщение — один раз."""
+        self._resume_stop = reason
+        if self.dry_run:
+            return
+        hh_resumes.block(reason)
+        from .notify_bot import _esc
+        self._notify(f"<b>{_esc(title)}</b>\n{_esc(reason)}\n"
+                     "Снять паузу после проверки: "
+                     "<code>run.py hh-resumes --unblock</code>", about="резюме")
+
     async def _visible(self, page, selector: str, timeout: float = 2.5):
         """Первый ВИДИМЫЙ элемент из совпадений селектора.
 
@@ -1498,6 +1728,18 @@ class HHApplyAgent(BaseAgent):
                                  "кнопка отклика не найдена",
                                  await self._screenshot(vid, "no-respond-button"))
 
+        # Резюме выбираем ДО письма и клика: если нужное резюме отправить
+        # нельзя, письмо было бы выброшенным вызовом модели.
+        choice = None
+        if self._resume_map is not None:
+            choice, refusal = await self._pick_resume(page, item)
+            if refusal is not None:
+                if refusal.result is Result.NO_RESUME_CHOICE:
+                    self._pause("hh не показал на странице вакансии, какие резюме "
+                                f"можно отправить ({item['url']}) — похоже, сменилась "
+                                f"вёрстка; снимок: {refusal.screenshot}")
+                return refusal
+
         try:
             letter = get_letter()
         except Exception as exc:  # noqa: BLE001 — сбой генерации не роняет прогон
@@ -1512,15 +1754,25 @@ class HHApplyAgent(BaseAgent):
             # Ни одного клика: часть вакансий отвечает на «Откликнуться»
             # мгновенной отправкой без попапа — в предпросмотре это был бы
             # реальный отклик. Поэтому только читаем состояние страницы.
+            resume = ""
+            if choice:
+                resume = (f"; резюме «{choice['title']}»"
+                          + ("" if choice["alone"] else " (в форме выбрать из нескольких)"))
             return self._attempt(item, letter, Result.DRY_RUN,
-                                 "кнопка отклика на месте, письмо готово — отправка не выполнялась")
+                                 "кнопка отклика на месте, письмо готово — отправка "
+                                 "не выполнялась" + resume)
 
         try:
-            return await self._submit(page, item, letter, button)
+            attempt = await self._submit(page, item, letter, button, choice)
         except Exception as exc:  # noqa: BLE001 — одна вакансия не роняет прогон
             log.exception("[hh_apply] #%s: ошибка отправки", vid)
             return self._attempt(item, letter, Result.FAILED, f"{type(exc).__name__}: {exc}",
                                  await self._screenshot(vid, "error"))
+        if choice and attempt.result.sent:
+            problem = await self._verify_resume(page, item, choice)
+            attempt.detail += (f" · ⚠ {problem}" if problem
+                               else f" · резюме «{choice['title']}»")
+        return attempt
 
     async def _forbidden_detail(self, page, status: int) -> tuple[str, bool]:
         """Почему страница не прочитана и навсегда ли это.
@@ -1592,7 +1844,8 @@ class HHApplyAgent(BaseAgent):
             return f"hh на странице: «…{low[start:end].strip()}…»"
         return ""
 
-    async def _submit(self, page, item: dict, letter: str, button) -> Attempt:
+    async def _submit(self, page, item: dict, letter: str, button,
+                      choice: dict | None = None) -> Attempt:
         vid = item["id"]
         await button.click()
         await page.wait_for_load_state("domcontentloaded")
@@ -1616,6 +1869,21 @@ class HHApplyAgent(BaseAgent):
             return self._attempt(item, letter, Result.NEEDS_MANUAL,
                                  "вакансия требует анкету работодателя",
                                  await self._screenshot(vid, "questions"))
+
+        # Резюме: если hh предлагает несколько, выбираем нужное. Без
+        # подтверждённого выбора не отправляем — иначе уйдёт резюме по
+        # умолчанию, и, скорее всего, под чужой профиль.
+        if choice and not choice["alone"]:
+            if not await self._select_resume(page, choice):
+                shot = await self._screenshot(vid, "no-resume-choice")
+                self._pause(
+                    f"в форме отклика на {item['url']} не удалось выбрать резюме "
+                    f"«{choice['title']}», отклик не отправлен; снимок и список "
+                    f"data-qa: {shot}")
+                return self._attempt(item, letter, Result.NO_RESUME_CHOICE,
+                                     f"не удалось выбрать резюме «{choice['title']}» "
+                                     "в форме отклика", shot)
+            log.info("[hh_apply] #%s: выбрано резюме «%s»", vid, choice["title"])
 
         # Поле письма скрыто за переключателем «Сопроводительное письмо»
         # (data-qa=vacancy-response-letter-toggle, на странице он есть и виден).
