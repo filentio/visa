@@ -1509,73 +1509,142 @@ class HHApplyAgent(BaseAgent):
                   "marks": [m for m in own if m], "others": [o for o in others if o]}
         return choice, None
 
-    async def _select_resume(self, page, choice: dict) -> bool:
-        """Выбрать резюме в форме отклика. True — выбор подтверждён."""
-        found = await page.evaluate(
-            """(t) => {
-              const norm = s => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-              const sel = 'input[type=radio], [role=radio], [role=option], option';
-              return [...document.querySelectorAll(sel)].map((e, i) => {
-                const box = e.closest('label') || e.parentElement || e;
-                return {
-                  i, tag: e.tagName.toLowerCase(),
-                  val: String(e.value || e.getAttribute('data-value') || ''),
-                  label: norm(box.innerText || e.textContent).slice(0, 300),
-                  checked: !!(e.checked || e.selected
-                              || e.getAttribute('aria-checked') === 'true'
-                              || e.getAttribute('aria-selected') === 'true'),
-                };
-              });
-            }""", choice)
+    # Форма отклика hh (разведка 04.11): переключателей у резюме нет. Выбранное
+    # резюме показано карточкой — data-qa resume-title внутри resume-detail;
+    # нажатие по карточке раскрывает список резюме. По умолчанию hh подставляет
+    # своё резюме (04.11 — скрытое резюме лояльности на вакансию Product Owner,
+    # рядом hidden-resume-warning).
+    _RESUME_CARD = '[data-qa="resume-title"]'
+    _RESUME_OPEN = '[data-qa="resume-detail"], [data-qa="resume-title"]'
+    _PICK_JS = """([marks, others, limit]) => {
+      const norm = s => (s || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+      const ours = t => marks.some(m => t.includes(m)
+          && !others.some(o => !m.includes(o) && t.includes(o)));
+      const vis = e => { const r = e.getBoundingClientRect();
+          return r.width > 0 && r.height > 0
+              && getComputedStyle(e).visibility !== 'hidden'; };
+      document.querySelectorAll('[data-js-pick]').forEach(e => e.removeAttribute('data-js-pick'));
+      const sel = '[data-qa="resume-title"], [role=option], [role=radio], '
+                + 'input[type=radio], label, li, [data-qa*="resume"]';
+      let best = null, bestLen = 1e9, count = 0;
+      for (const e of document.querySelectorAll(sel)) {
+        const box = e.tagName === 'INPUT' ? (e.closest('label') || e.parentElement) : e;
+        if (!box || !vis(box)) continue;
+        const t = norm(box.innerText);
+        if (!t || t.length > limit || !ours(t)) continue;
+        count++;
+        if (t.length < bestLen) { best = e; bestLen = t.length; }
+      }
+      if (best) best.setAttribute('data-js-pick', '1');
+      return {count, tag: best ? best.tagName.toLowerCase() : ''};
+    }"""
+
+    @staticmethod
+    def _resume_marks(choice: dict) -> tuple[list[str], list[str]]:
         def norm(x: str) -> str:
             return " ".join((x or "").split()).lower()
         marks = [norm(m) for m in choice.get("marks") or [choice["title"]] if m]
         others = [norm(o) for o in choice["others"] if o]
+        return marks, others
 
-        def ours(text: str) -> bool:
-            """Текст говорит о нашем резюме и ни об одном чужом."""
-            return any(m in text and not any(o not in m and o in text for o in others)
-                       for m in marks)
+    @staticmethod
+    def _is_ours(text: str, marks: list[str], others: list[str]) -> bool:
+        """Текст говорит о нашем резюме и ни об одном чужом."""
+        text = " ".join((text or "").split()).lower()
+        return any(m in text and not any(o not in m and o in text for o in others)
+                   for m in marks)
 
-        by_value = [f for f in found if f["val"] in (choice["id"], choice["hash"])]
-        hits = by_value or [f for f in found if ours(f["label"])]
-        sel = "input[type=radio], [role=radio], [role=option], option"
-        if len(hits) == 1:
-            hit = hits[0]
-            el = page.locator(sel).nth(hit["i"])
+    async def _shown_resumes(self, page) -> list[str]:
+        """Названия резюме в видимых карточках формы."""
+        out = []
+        loc = page.locator(self._RESUME_CARD)
+        for i in range(min(await loc.count(), 10)):
+            el = loc.nth(i)
             try:
-                if hit["tag"] == "option":
-                    parent = el.locator("xpath=..")
-                    await parent.select_option(value=hit["val"] or None,
-                                               label=None if hit["val"] else hit["label"])
-                elif hit["tag"] == "input":
-                    await el.check(force=True)
-                else:
-                    await el.click()
-            except Exception as exc:  # noqa: BLE001
-                log.warning("[hh_apply] клик по резюме не прошёл: %s", exc)
-                return False
-            await page.wait_for_timeout(400)
-            ok = await page.evaluate(
-                """([sel, i]) => {
-                  const e = document.querySelectorAll(sel)[i];
-                  return !!e && !!(e.checked || e.selected
-                    || e.getAttribute('aria-checked') === 'true'
-                    || e.getAttribute('aria-selected') === 'true');
-                }""", [sel, hit["i"]])
-            return bool(ok)
-        if hits:
-            log.warning("[hh_apply] резюме «%s» совпало с %d элементами формы",
-                        choice["title"], len(hits))
+                if await el.is_visible():
+                    out.append(" ".join((await el.inner_text()).split()))
+            except Exception:  # noqa: BLE001 — перерисовалось
+                continue
+        return out
+
+    async def _select_resume(self, page, choice: dict) -> bool:
+        """Выбрать резюме в форме отклика. True — только если карточка формы
+        (или отмеченный переключатель) показывает именно нужное резюме."""
+        marks, others = self._resume_marks(choice)
+        ours = lambda t: self._is_ours(t, marks, others)  # noqa: E731
+
+        async def settled() -> bool | None:
+            """True — показано нужное; False — показано чужое; None — не понять."""
+            shown = await self._shown_resumes(page)
+            if len(shown) == 1:
+                return ours(shown[0])
+            checked = await page.evaluate(
+                """() => [...document.querySelectorAll(
+                     'input[type=radio]:checked, [role=radio][aria-checked=true], '
+                     + '[role=option][aria-selected=true]')]
+                   .map(e => ((e.closest('label') || e.parentElement || e).innerText || ''))""")
+            if len(checked) == 1:
+                return ours(checked[0])
+            return None
+
+        await self._visible(page, f'{self._RESUME_CARD}, input[type=radio], [role=radio]',
+                            timeout=4)
+        before = await self._shown_resumes(page)
+        log.info("[hh_apply] в форме показано резюме: %s", before or "—")
+        state = await settled()
+        if state is True:
+            return True
+
+        # Раскрыть список: нажать на карточку выбранного резюме.
+        if state is False or len(before) == 1:
+            # Нет карточки — значит, переключатели уже на виду, выбираем среди них.
+            opener = await self._visible(page, self._RESUME_OPEN, timeout=2)
+            if opener is not None:
+                try:
+                    await opener.click()
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("[hh_apply] карточка резюме не нажалась: %s", exc)
+                    return False
+                await page.wait_for_timeout(1200)
+
+        # В раскрытом списке — самый узкий видимый элемент с нашим резюме.
+        picked = await page.evaluate(self._PICK_JS, [marks, others, 400])
+        if not picked.get("count"):
+            log.warning("[hh_apply] в списке резюме нет «%s»; видно: %s",
+                        choice["title"], await self._shown_resumes(page))
             return False
-        # Переключателей нет: форма показывает одно выбранное резюме карточкой.
-        # Доверяем, только если в окне отклика есть название нужного резюме и
-        # нет названий других; после отправки всё равно сверяемся со страницей.
-        dialog_text = await page.evaluate(
-            """() => [...document.querySelectorAll(
-                 '[role=dialog], [data-qa*="popup"], [data-qa*="modal"], form')]
-               .map(e => e.innerText || '').join(' ')""")
-        return ours(norm(dialog_text))
+        el = page.locator('[data-js-pick="1"]').first
+        try:
+            if picked.get("tag") == "input":
+                await el.check(force=True)
+            else:
+                await el.click()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[hh_apply] резюме в списке не нажалось: %s", exc)
+            return False
+        await page.wait_for_timeout(1000)
+
+        # Бывает кнопка подтверждения выбора.
+        if await settled() is not True:
+            confirm = page.locator(
+                '[role=dialog] button, [data-qa*="modal"] button, [data-qa*="popup"] button'
+            ).filter(has_text=re.compile(r"^\s*(Выбрать|Применить|Готово|Сохранить|"
+                                         r"Подтвердить)\s*$", re.I))
+            try:
+                if await confirm.count() and await confirm.first.is_visible():
+                    await confirm.first.click()
+                    await page.wait_for_timeout(1000)
+            except Exception:  # noqa: BLE001
+                pass
+
+        for _ in range(6):
+            state = await settled()
+            if state is not None:
+                break
+            await page.wait_for_timeout(500)
+        log.info("[hh_apply] после выбора показано: %s",
+                 await self._shown_resumes(page) or "—")
+        return state is True
 
     async def _verify_resume(self, page, item: dict, choice: dict) -> str:
         """После отправки: каким резюме hh записал отклик. Пустая строка —
