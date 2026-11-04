@@ -947,11 +947,14 @@ class HHApplyAgent(BaseAgent):
 
         letter = ("письмо приложено" if attempt.result is Result.APPLIED
                   else "без письма — hh отправил отклик на клике")
+        # Каким резюме ушёл отклик — хвост detail от _process (после « · »).
+        resume = attempt.detail.rsplit(" · ", 1)[1] if " · " in attempt.detail else ""
         self._notify(
             "📤 <b>Отклик отправлен</b>\n"
             f"{_esc(attempt.role)} — {_esc(attempt.company)}\n"
             f"Оценка: {attempt.score}% · профиль: {_esc(attempt.profile or '—')}\n"
-            f"{letter}\n"
+            + (f"{_esc(resume)}\n" if resume else "")
+            + f"{letter}\n"
             f"{_esc(attempt.url)}",
             about=f"#{attempt.vacancy_id}",
         )
