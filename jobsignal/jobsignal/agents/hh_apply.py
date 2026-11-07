@@ -190,6 +190,15 @@ NOT_ALLOWED_TEXT_RE = re.compile(
 )
 
 
+class LetterRejected(Exception):
+    """Письмо написано, но отправлять его нельзя (факты не из резюме)."""
+
+
+# Сколько прогонов подряд письмо к вакансии не получается, прежде чем убрать
+# её из очереди: иначе она съедает попытку и вызов модели в каждом прогоне.
+NO_LETTER_GIVE_UP = 3
+
+
 # Минимальная длина осмысленного письма. Всё короче — заглушка или обрыв.
 MIN_LETTER_CHARS = 200
 SENTENCE_END = ".!?…»)\""
@@ -744,14 +753,19 @@ class HHApplyAgent(BaseAgent):
         for try_no in range(1, LETTER_TRIES + 1):
             letter = letters.generate(v.role or "", v.company or "", vac_text,
                                       profile=profile, channel="hh")
-            if letter.ok:
+            if letter.ok and letter.facts_ok:
                 break
             log.warning("[hh_apply] #%s: письмо не годится (попытка %d/%d): %s",
                         v.id, try_no, LETTER_TRIES,
                         letter_problem(letter.text) or "; ".join(letter.issues))
         else:
             # Непригодный текст в draft_text не пишем — иначе следующий прогон
-            # снова упрётся в него вместо новой генерации.
+            # снова упрётся в него вместо новой генерации. Письмо с фактами,
+            # которых нет в резюме, не отправляем вовсе (07.11: «в независимой
+            # практике сократил онбординг», а это было в ФИНАМе).
+            if letter is not None and letter.ok and not letter.facts_ok:
+                raise LetterRejected("в письме факты, которых нет в резюме: "
+                                     + "; ".join(letter.issues)[:300])
             return letter.text if letter else ""
 
         letters.remember(v, letter)
@@ -918,6 +932,14 @@ class HHApplyAgent(BaseAgent):
                     "[hh_apply] #%s: hh закрыл страницу %d раз — убираю из очереди",
                     attempt.vacancy_id, seen,
                 )
+        elif attempt.result is Result.NO_LETTER and not self.dry_run:
+            # Письмо не выходит который прогон подряд — вакансия в работе
+            # руками (статус skipped, причина в hh_apply_attempts).
+            seen = self._seen_with_result(session, attempt.vacancy_id, Result.NO_LETTER)
+            if seen >= NO_LETTER_GIVE_UP:
+                self._set_status(session, attempt, VacancyStatus.skipped)
+                log.warning("[hh_apply] #%s: письмо не получилось %d раз — "
+                            "убираю из очереди", attempt.vacancy_id, seen)
         elif attempt.result is Result.NO_RESPOND_BUTTON:
             # Тот же ограниченный ретрай, что и для 403, но без оглядки на
             # _page_read: этот исход сам по себе означает, что страница
@@ -1823,6 +1845,9 @@ class HHApplyAgent(BaseAgent):
 
         try:
             letter = get_letter()
+        except LetterRejected as exc:
+            log.warning("[hh_apply] #%s: %s", vid, exc)
+            return self._attempt(item, "", Result.NO_LETTER, str(exc))
         except Exception as exc:  # noqa: BLE001 — сбой генерации не роняет прогон
             log.exception("[hh_apply] #%s: ошибка генерации письма", vid)
             return self._attempt(item, "", Result.NO_LETTER, f"{type(exc).__name__}: {exc}")
