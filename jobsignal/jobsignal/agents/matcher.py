@@ -15,7 +15,7 @@ import re
 import os
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import selectinload
 
 from ..db import MatchScore, Vacancy, VacancyStatus, get_session_factory
@@ -217,14 +217,31 @@ class MatcherAgent(BaseAgent):
                            - timedelta(days=MATCH_MAX_AGE_DAYS)]
                           if MATCH_MAX_AGE_DAYS > 0 else []),
                     )
-                    # Свежие вперёд: если пачки не хватит на всю очередь,
-                    # оценить стоит то, по чему ещё можно откликнуться.
-                    .order_by(Vacancy.id.desc())
+                    # hh первым: по нему идёт автоотклик, и запас других
+                    # источников (почта, анкеты) не должен его задерживать.
+                    # Внутри — свежие вперёд: если пачки не хватит на всю
+                    # очередь, оценить стоит то, по чему ещё можно откликнуться.
+                    .order_by(case((Vacancy.contact_type == "hh", 0), else_=1),
+                              Vacancy.id.desc())
                     .limit(limit)
                 )
                 .scalars()
                 .all()
             )
+            # Остальные источники — не больше MATCH_OTHER_PER_RUN за прогон:
+            # 08.11 к оценке разом добавились ~1100 вакансий с почтой и
+            # анкетами. Без потолка они выбрали бы дневной лимит токенов, и
+            # модель встала бы целиком — вместе с письмами для откликов на hh.
+            other_cap = int(os.environ.get("MATCH_OTHER_PER_RUN", "20"))
+            if other_cap >= 0:
+                kept, other = [], 0
+                for v in vacs:
+                    if v.contact_type == "hh":
+                        kept.append(v)
+                    elif other < other_cap:
+                        kept.append(v)
+                        other += 1
+                vacs = kept
 
             # Сколько телеграм-вакансий отбросило условие выше. Считаем
             # отдельным запросом, а не по разнице выборки: фильтр теперь в
