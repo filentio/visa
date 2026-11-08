@@ -103,6 +103,10 @@ def _build(cmd: str, args: list[str]) -> list[str]:
         if not re.fullmatch(r"[\w .+#-]{2,60}", q):
             raise ValueError("запрос: буквы, цифры, пробелы, до 60 знаков")
         return [PY, "tools/probe_sources.py", q]
+    if cmd == "probe-board":
+        if not args or args[0] not in ("habr", "getmatch", "geekjob", "avito"):
+            raise ValueError("площадка: habr | getmatch | geekjob | avito")
+        return [PY, "tools/probe_board.py", args[0]]
     if cmd == "funnel-report":
         return [PY, "tools/funnel_report.py", "--days", one_int("90", 365)]
     if cmd == "tg-scout-dry":
@@ -114,7 +118,7 @@ def _build(cmd: str, args: list[str]) -> list[str]:
 
 COMMANDS = ("llm-check", "status", "proxy-traffic", "hh-session", "hh-resumes",
             "hh-preview", "hh-apply-dry", "letter-preview", "try-resume-choice",
-            "rescore-dry", "llm-use", "tg-scout-dry", "pipeline", "funnel-report", "probe-sources")
+            "rescore-dry", "llm-use", "tg-scout-dry", "pipeline", "funnel-report", "probe-sources", "probe-board")
 
 
 def _sh(argv: list[str], timeout: int = 20) -> str:
