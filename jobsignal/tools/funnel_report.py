@@ -124,6 +124,24 @@ def main() -> int:
     for thr in (70, 72, 75, 78, 80, 85):
         print(f"  {thr}%: {sum(1 for (vid,) in q if best.get(vid, (0, ''))[0] >= thr)}")
 
+    # Запас без оценки: вакансии new по типу контакта и возрасту.
+    print("\nНе оценены (status new) по типу контакта и возрасту:")
+    now = datetime.now(timezone.utc)
+    ages = defaultdict(lambda: [0, 0, 0, 0])
+    for ctype, created in c.execute(
+            "SELECT contact_type, created_at FROM vacancies WHERE is_primary = 1 "
+            "AND status = 'new'"):
+        try:
+            d = datetime.fromisoformat(str(created)[:19]).replace(tzinfo=timezone.utc)
+            days = (now - d).days
+        except ValueError:
+            days = 999
+        row = ages[ctype or "—"]
+        row[0 if days <= 7 else 1 if days <= 14 else 2 if days <= 30 else 3] += 1
+    print(f"  {'тип':<12} {'≤7д':>6} {'8-14д':>6} {'15-30д':>7} {'старше':>7}")
+    for k, r in sorted(ages.items(), key=lambda kv: -sum(kv[1])):
+        print(f"  {k:<12} {r[0]:>6} {r[1]:>6} {r[2]:>7} {r[3]:>7}")
+
     # Время до ответа.
     lags = []
     for a in apps:
