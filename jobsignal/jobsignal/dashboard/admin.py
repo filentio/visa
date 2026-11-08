@@ -98,6 +98,8 @@ def _build(cmd: str, args: list[str]) -> list[str]:
         if any(a != "--drop-openai" for a in rest):
             raise ValueError("допустим только --drop-openai")
         return [PY, "run.py", "llm-use", args[0], *rest]
+    if cmd == "funnel-report":
+        return [PY, "tools/funnel_report.py", "--days", one_int("90", 365)]
     if cmd == "tg-scout-dry":
         return [PY, "run.py", "tg-scout", "--dry-run"]
     if cmd == "pipeline":
@@ -107,7 +109,7 @@ def _build(cmd: str, args: list[str]) -> list[str]:
 
 COMMANDS = ("llm-check", "status", "proxy-traffic", "hh-session", "hh-resumes",
             "hh-preview", "hh-apply-dry", "letter-preview", "try-resume-choice",
-            "rescore-dry", "llm-use", "tg-scout-dry", "pipeline")
+            "rescore-dry", "llm-use", "tg-scout-dry", "pipeline", "funnel-report")
 
 
 def _sh(argv: list[str], timeout: int = 20) -> str:
