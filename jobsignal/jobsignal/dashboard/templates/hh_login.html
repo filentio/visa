@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Вход в hh — JobSignal</title>
+<style>
+:root{
+  --bg:#131722;--bg2:#1a2235;--bg3:#1e2d45;
+  --accent:#4F46E5;--accent2:#6366f1;
+  --green:#22c55e;--red:#ef4444;--amber:#f59e0b;--gray:#64748b;
+  --text:#e2e8f0;--text2:#94a3b8;--border:#2a3a55;
+  --radius:10px;--font:'Inter',system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px;min-height:100vh;}
+a{color:var(--accent2);text-decoration:none;}
+nav{background:var(--bg2);border-bottom:1px solid var(--border);
+  padding:12px 16px;display:flex;align-items:center;gap:16px;flex-wrap:wrap;row-gap:8px;}
+nav .logo{font-weight:700;font-size:15px;}
+nav a{color:var(--text2);font-size:13px;}
+nav a.active{color:var(--accent2);}
+.wrap{max-width:1320px;margin:0 auto;padding:20px 16px 40px;}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:14px;}
+h1{font-size:18px;margin-bottom:8px;}
+.muted{color:var(--text2);font-size:13px;line-height:1.5;}
+.state{display:flex;align-items:center;gap:8px;font-weight:600;margin-bottom:4px;}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--gray);flex:none;}
+.dot.ok{background:var(--green);} .dot.bad{background:var(--red);} .dot.run{background:var(--amber);}
+button{background:var(--accent);color:#fff;border:none;border-radius:8px;padding:9px 14px;
+  font-size:13.5px;cursor:pointer;font-family:inherit;}
+button.sec{background:var(--bg3);color:var(--text);border:1px solid var(--border);}
+button:disabled{opacity:.5;cursor:default;}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px;}
+input[type=text]{flex:1;min-width:180px;background:var(--bg);color:var(--text);border:1px solid var(--border);
+  border-radius:8px;padding:9px 11px;font-size:14px;font-family:inherit;}
+#screenWrap{position:relative;border:1px solid var(--border);border-radius:8px;overflow:hidden;
+  background:#000;margin-top:12px;display:none;}
+#screen{display:block;width:100%;height:auto;cursor:crosshair;user-select:none;-webkit-user-drag:none;}
+#ping{position:absolute;width:18px;height:18px;margin:-9px 0 0 -9px;border:2px solid var(--amber);
+  border-radius:50%;pointer-events:none;display:none;}
+ol{margin:8px 0 0 18px;color:var(--text2);font-size:13px;line-height:1.6;}
+</style>
+</head>
+<body>
+<nav>
+  <span class="logo">⚡ JobSignal</span>
+  <a href="/status">Состояние</a>
+  <a href="/">Вакансии</a>
+  <a href="/analytics">Аналитика</a>
+  <a href="/channels">Каналы</a>
+  <a href="/resumes">Резюме</a>
+  <a href="/recruiters">Рекрутёры</a>
+  <a href="/settings">Настройки</a>
+  <a href="/hh-login" class="active">Вход в hh</a>
+</nav>
+
+<div class="wrap">
+  <div class="card">
+    <h1>Вход в hh.ru</h1>
+    <div class="muted">Браузер открывается на сервере через тот же прокси, что у автоотклика,
+      поэтому hh не погасит сессию из-за смены адреса. Сессия сохранится сама, как только вы войдёте.</div>
+    <ol>
+      <li>Нажмите «Начать вход» и подождите 10–20 секунд, пока появится страница hh.</li>
+      <li>Кликните по полю на картинке, затем напишите текст в поле под ней и нажмите «Ввести».</li>
+      <li>Телефон или почта → код из SMS → капча, если попросят. Как в обычном браузере.</li>
+    </ol>
+    <div class="row">
+      <button id="btnStart">Начать вход</button>
+      <button id="btnStop" class="sec" disabled>Отменить</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="state"><span class="dot" id="dot"></span><span id="stateText">Браузер не запущен</span></div>
+    <div class="muted" id="stateMsg"></div>
+
+    <div id="screenWrap">
+      <img id="screen" alt="экран браузера на сервере">
+      <div id="ping"></div>
+    </div>
+
+    <div class="row" id="controls" style="display:none">
+      <input type="text" id="text" placeholder="текст для поля, на которое вы кликнули" autocomplete="off">
+      <button id="btnType">Ввести</button>
+      <button class="sec" data-key="Enter">Enter ⏎</button>
+      <button class="sec" data-key="Backspace">⌫</button>
+      <button class="sec" data-key="Tab">Tab</button>
+    </div>
+    <div class="row" id="controls2" style="display:none">
+      <button class="sec" data-scroll="-400">▲ Прокрутить</button>
+      <button class="sec" data-scroll="400">▼ Прокрутить</button>
+      <button class="sec" data-cmd="reload">Обновить страницу</button>
+      <button class="sec" data-cmd="login">Открыть вход заново</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const W = 1280, H = 800;
+let running = false, timer = null, frameTimer = null;
+
+async function post(url, body) {
+  const r = await fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                              body: JSON.stringify(body || {})});
+  return r.json().catch(() => ({}));
+}
+function send(cmd) { return post('/api/hh-login/input', cmd); }
+
+const LABELS = {
+  idle: 'Браузер не запущен', starting: 'Запускаю браузер…', login: 'Ждём входа',
+  saving: 'Сохраняю сессию…', done: 'Готово: сессия сохранена', failed: 'Не получилось',
+  stopped: 'Вход отменён', timeout: 'Время вышло'
+};
+
+async function poll() {
+  let st;
+  try { st = await (await fetch('/api/hh-login/status')).json(); } catch (e) { return; }
+  running = !!st.running;
+  $('stateText').textContent = LABELS[st.state] || st.state;
+  $('stateMsg').textContent = st.message || '';
+  $('dot').className = 'dot ' + (st.state === 'done' ? 'ok'
+    : ['failed', 'timeout'].includes(st.state) ? 'bad' : running ? 'run' : '');
+  $('btnStart').disabled = running;
+  $('btnStop').disabled = !running;
+  const live = running && ['login', 'saving', 'starting'].includes(st.state);
+  $('screenWrap').style.display = live ? 'block' : 'none';
+  $('controls').style.display = live ? 'flex' : 'none';
+  $('controls2').style.display = live ? 'flex' : 'none';
+  if (live && !frameTimer) frameTimer = setInterval(frame, 800);
+  if (!live && frameTimer) { clearInterval(frameTimer); frameTimer = null; }
+}
+
+function frame() {
+  const img = new Image();
+  img.onload = () => { $('screen').src = img.src; };
+  img.src = '/api/hh-login/screen?t=' + Date.now();
+}
+
+$('screen').addEventListener('click', ev => {
+  const r = ev.target.getBoundingClientRect();
+  const x = (ev.clientX - r.left) * W / r.width;
+  const y = (ev.clientY - r.top) * H / r.height;
+  const p = $('ping');
+  p.style.left = (ev.clientX - r.left) + 'px'; p.style.top = (ev.clientY - r.top) + 'px';
+  p.style.display = 'block'; setTimeout(() => p.style.display = 'none', 600);
+  send({t: 'click', x, y});
+  $('text').focus();
+});
+
+$('btnType').onclick = async () => {
+  const v = $('text').value;
+  if (!v) return;
+  await send({t: 'type', text: v});
+  $('text').value = '';
+};
+$('text').addEventListener('keydown', async ev => {
+  if (ev.key === 'Enter') {
+    ev.preventDefault();
+    const v = $('text').value;
+    if (v) { await send({t: 'type', text: v}); $('text').value = ''; }
+    else await send({t: 'key', key: 'Enter'});
+  }
+});
+document.querySelectorAll('[data-key]').forEach(b => b.onclick = () => send({t: 'key', key: b.dataset.key}));
+document.querySelectorAll('[data-scroll]').forEach(b => b.onclick = () => send({t: 'scroll', dy: +b.dataset.scroll}));
+document.querySelectorAll('[data-cmd]').forEach(b => b.onclick = () => send({t: b.dataset.cmd}));
+
+$('btnStart').onclick = async () => {
+  $('btnStart').disabled = true;
+  const r = await post('/api/hh-login/start');
+  $('stateMsg').textContent = r.message || '';
+  poll();
+};
+$('btnStop').onclick = () => send({t: 'stop'});
+
+poll();
+timer = setInterval(poll, 1500);
+</script>
+</body>
+</html>

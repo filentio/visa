@@ -1099,6 +1099,9 @@ def _same_origin() -> bool:
 # Служебный раздел: обновление кода и проверки без SSH (dashboard/admin.py).
 from jobsignal.dashboard import admin as _admin  # noqa: E402
 _admin.register(app, _requires_auth, _same_origin)
+# Вход в hh из кабинета: браузер на сервере (dashboard/hh_login.py).
+from jobsignal.dashboard import hh_login as _hh_login  # noqa: E402
+_hh_login.register(app, _requires_auth, _same_origin)
 
 
 @app.route("/settings")

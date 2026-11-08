@@ -573,9 +573,13 @@ def _howto() -> str:
     hh привязывает сессию к адресу. --via-server берёт прокси с сервера и
     ходит через SSH-туннель, а готовую сессию сам отправляет на сервер."""
     host = _host()
+    page = os.environ.get("DASHBOARD_URL") or f"https://{host.replace('.', '-')}.sslip.io"
     return (
-        "<b>Что сделать</b> (на компьютере с экраном: на сервере дисплея нет, "
-        "а hh требует пароль, SMS и капчу).\n\n"
+        f"<b>Проще всего</b> — в кабинете: {page.rstrip('/')}/hh-login → «Начать "
+        "вход». Браузер откроется на сервере через его прокси, вход — там же, "
+        "сессия сохранится сама.\n\n"
+        "<b>Запасной путь</b> — на своём компьютере (нужен экран: hh требует "
+        "пароль, SMS и капчу).\n\n"
         "<b>Windows</b> (PowerShell), в любой папке:\n"
         f"<code>scp root@{host}:/opt/jobsignal_local/tools/hh_login_local.py .</code>\n"
         "<code>py -m venv .hh; .hh\\Scripts\\pip install playwright; "
