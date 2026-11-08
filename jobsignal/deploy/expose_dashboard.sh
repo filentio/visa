@@ -23,20 +23,22 @@ ENV="$APP/config/.env"
 [ -f "$ENV" ] || { echo "нет $ENV — сначала bootstrap.sh"; exit 1; }
 
 # ── адрес ────────────────────────────────────────────────────────────────────
-HOST=""
+# Адресов может быть несколько: sslip.io всегда, плюс свои имена аргументами
+# (например, бесплатный my-name.duckdns.org с A-записью на сервер).
+HOSTS=()
 FORCE_NEW=0
 for a in "$@"; do
   case "$a" in
     --new-pass) FORCE_NEW=1 ;;
-    *) HOST="$a" ;;
+    *) HOSTS+=("$a") ;;
   esac
 done
-if [ -z "$HOST" ]; then
-  IP=$(curl -4 -fsS --max-time 10 https://api.ipify.org || hostname -I | awk '{print $1}')
-  [ -n "$IP" ] || { echo "не удалось узнать внешний адрес сервера"; exit 1; }
-  HOST="${IP//./-}.sslip.io"
-fi
-echo "==> адрес кабинета: https://$HOST"
+IP=$(curl -4 -fsS --max-time 10 https://api.ipify.org || hostname -I | awk '{print $1}')
+[ -n "$IP" ] || { echo "не удалось узнать внешний адрес сервера"; exit 1; }
+SSLIP="${IP//./-}.sslip.io"
+[[ " ${HOSTS[*]} " == *" $SSLIP "* ]] || HOSTS=("$SSLIP" "${HOSTS[@]}")
+HOST=$(IFS=,; echo "${HOSTS[*]}" | sed 's/,/, /g')
+for h in "${HOSTS[@]}"; do echo "==> адрес кабинета: https://$h"; done
 
 # ── пароль ───────────────────────────────────────────────────────────────────
 # Как читает python-dotenv: хвост « # комментарий» и пробелы — не часть пароля.
@@ -101,20 +103,22 @@ systemctl restart caddy
 
 # ── проверка ─────────────────────────────────────────────────────────────────
 echo "==> жду сертификат (до минуты)"
-code=""
-for _ in $(seq 1 20); do
-  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://$HOST/status" || true)
-  [ "$code" = "401" ] && break
-  sleep 3
-done
-
 echo
-if [ "$code" = "401" ]; then
-  echo "ГОТОВО. Кабинет: https://$HOST/status"
-else
-  echo "Кабинет пока не ответил как ожидалось (код: ${code:-нет ответа})."
-  echo "Посмотри: journalctl -u caddy -n 40 --no-pager"
-fi
+for h in "${HOSTS[@]}"; do
+  code=""
+  for _ in $(seq 1 20); do
+    code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://$h/status" || true)
+    [ "$code" = "401" ] && break
+    sleep 3
+  done
+  if [ "$code" = "401" ]; then
+    echo "ГОТОВО. Кабинет: https://$h/status"
+  else
+    echo "https://$h пока не ответил как ожидалось (код: ${code:-нет ответа})."
+    echo "  Если это свой домен — проверь, что он указывает на $IP."
+    echo "  Журнал: journalctl -u caddy -n 40 --no-pager"
+  fi
+done
 echo "Логин: $USER_NAME"
 if [ -n "$NEWPASS" ]; then
   echo "Пароль: $NEWPASS"
