@@ -107,12 +107,18 @@ def _requires_auth(f):
         # а не логин с паролем.
         bearer = request.headers.get("Authorization", "")
         token = os.environ.get("DASHBOARD_API_TOKEN", "")
-        if token and len(token) >= 32 and bearer.startswith("Bearer "):
+        if token and len(token) >= 32 and bearer.lower().startswith("bearer "):
             import hmac
-            if hmac.compare_digest(bearer[7:].strip().encode(), token.encode()):
+            import re as _re
+            # «Bearer Bearer <токен>»: префикс добавила и форма секрета, и человек.
+            got = _re.sub(r"^(?:bearer\s+)+", "", bearer.strip(), flags=_re.I).strip()
+            if hmac.compare_digest(got.encode(), token.encode()):
                 return f(*args, **kwargs)
             _note_fail(ip)
-            return Response("Неверный токен", 401)
+            # Подсказка без самого токена: длина и совпадение начала.
+            return Response(f"Неверный токен (пришло {len(got)} знаков, нужно "
+                            f"{len(token)}; начало {'совпадает' if got[:4] == token[:4] else 'другое'})",
+                            401)
         auth = request.authorization
         if not auth or not _check_auth(auth.username or "", auth.password or ""):
             if auth:
