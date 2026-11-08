@@ -1,0 +1,11 @@
+[Unit]
+Description=jobsignal: переразложить код и перезапустить службы без новых коммитов
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /root/visa/jobsignal/deploy/self_update.sh --force
+TimeoutStartSec=2400
+StandardOutput=journal
+StandardError=journal

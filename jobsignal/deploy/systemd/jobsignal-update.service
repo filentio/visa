@@ -1,0 +1,15 @@
+[Unit]
+Description=jobsignal: обновление кода с ветки репозитория (deploy/self_update.sh)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Скрипт берём из клона /root/visa, а не из /opt/jobsignal_local: свою копию в
+# /opt он перезаписывает по ходу работы. git заменяет файл новым, и bash
+# дочитывает прежний.
+ExecStart=/bin/bash /root/visa/jobsignal/deploy/self_update.sh
+# Ожидание замка hh (до 25 минут) плюс установка зависимостей.
+TimeoutStartSec=2400
+StandardOutput=journal
+StandardError=journal

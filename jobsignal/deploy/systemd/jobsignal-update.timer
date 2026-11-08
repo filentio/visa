@@ -1,0 +1,11 @@
+[Unit]
+Description=jobsignal: проверять обновления кода каждые 10 минут
+
+[Timer]
+OnBootSec=5min
+OnActiveSec=2min
+OnUnitInactiveSec=10min
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

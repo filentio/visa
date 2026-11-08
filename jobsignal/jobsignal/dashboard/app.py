@@ -1069,6 +1069,11 @@ def _same_origin() -> bool:
     return urlsplit(origin).netloc == request.host
 
 
+# Служебный раздел: обновление кода и проверки без SSH (dashboard/admin.py).
+from jobsignal.dashboard import admin as _admin  # noqa: E402
+_admin.register(app, _requires_auth, _same_origin)
+
+
 @app.route("/settings")
 @_requires_auth
 def settings_page():
