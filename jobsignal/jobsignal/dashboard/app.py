@@ -102,6 +102,17 @@ def _requires_auth(f):
         if not os.environ.get("DASHBOARD_PASS") and not _is_local_direct():
             return Response("Кабинет закрыт: на сервере не задан DASHBOARD_PASS",
                             503)
+        # Токен для служебного доступа (DASHBOARD_API_TOKEN, run.py admin-token):
+        # хранилище секретов облачной сессии Claude умеет подставлять Bearer,
+        # а не логин с паролем.
+        bearer = request.headers.get("Authorization", "")
+        token = os.environ.get("DASHBOARD_API_TOKEN", "")
+        if token and len(token) >= 32 and bearer.startswith("Bearer "):
+            import hmac
+            if hmac.compare_digest(bearer[7:].strip().encode(), token.encode()):
+                return f(*args, **kwargs)
+            _note_fail(ip)
+            return Response("Неверный токен", 401)
         auth = request.authorization
         if not auth or not _check_auth(auth.username or "", auth.password or ""):
             if auth:

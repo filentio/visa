@@ -26,6 +26,7 @@ COMMANDS = (
     "tg-scout",               # NEW: поиск новых каналов с вакансиями и надзор за старыми
     "llm-check",              # NEW: отвечает ли модель (основной и запасной провайдер)
     "llm-use",                # NEW: все задачи модели на одного провайдера
+    "admin-token",            # NEW: токен служебного доступа к кабинету (Bearer)
     "channels",               # NEW: list channels
     "pipeline", "status", "dashboard", "serve",
 )
@@ -485,6 +486,26 @@ def main():
         print(f"Очередь: {rep['queue']} | предложено: {rep['offered']}"
               + (f" | не вышло: {rep['failed']}" if rep.get("failed") else "")
               + (f" | осталось в очереди: {left}" if left > 0 else ""))
+
+    elif cmd == "admin-token":
+        """Новый токен служебного доступа к кабинету (DASHBOARD_API_TOKEN).
+
+        Печатается один раз. Его вставляют в секрет среды Claude (тип Bearer,
+        сайт — адрес кабинета); прежний токен перестаёт действовать.
+        --revoke — убрать токен совсем.
+        """
+        import secrets
+        from jobsignal import env_store
+        if "--revoke" in sys.argv[2:]:
+            env_store.update({"DASHBOARD_API_TOKEN": None})
+            print("токен удалён")
+        else:
+            tok = secrets.token_urlsafe(36)
+            env_store.update({"DASHBOARD_API_TOKEN": tok})
+            print("Новый токен (виден один раз, в чаты не вставлять):\n")
+            print(tok)
+            print("\nВставь его в секрет среды Claude: тип Bearer, сайт — адрес кабинета.")
+        os.system("systemctl restart jobsignal-dashboard")
 
     elif cmd == "llm-use":
         """Все задачи модели — одному провайдеру, без запасного.
