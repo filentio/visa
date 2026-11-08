@@ -107,6 +107,16 @@ def _requires_auth(f):
         # а не логин с паролем.
         bearer = request.headers.get("Authorization", "")
         token = os.environ.get("DASHBOARD_API_TOKEN", "")
+        # Токен принимаем и без слова Bearer, и в X-Api-Key: формы секретов
+        # бывают разные. Логин с паролем (Basic) идёт своей дорогой ниже.
+        raw = request.headers.get("X-Api-Key", "").strip()
+        if raw:
+            bearer = "Bearer " + raw
+        elif bearer and not bearer.lower().startswith(("basic ", "bearer ")):
+            bearer = "Bearer " + bearer
+        if bearer.lower().startswith("bearer ") and not (token and len(token) >= 32):
+            return Response("Токен прислан, но на сервере он не задан: "
+                            "run.py admin-token", 401)
         if token and len(token) >= 32 and bearer.lower().startswith("bearer "):
             import hmac
             import re as _re
@@ -124,7 +134,7 @@ def _requires_auth(f):
             if auth:
                 _note_fail(ip)
             return Response(
-                "Нужна авторизация", 401,
+                "Нужна авторизация" + ("" if bearer else " (заголовка Authorization нет)"), 401,
                 {"WWW-Authenticate": 'Basic realm="JobSignal", charset="UTF-8"'}
             )
         return f(*args, **kwargs)
