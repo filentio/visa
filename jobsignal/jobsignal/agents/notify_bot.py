@@ -259,6 +259,8 @@ class NotifyBot:
                 "hh": "🔗 Открыть на hh.ru",
                 "form": "🔗 Открыть форму",
                 "linkedin": "🔗 Открыть LinkedIn",
+                "habr": "🔗 Открыть на Хабр Карьере",
+                "getmatch": "🔗 Открыть на getmatch",
             }.get(ct, "🔗 Открыть вакансию")
 
             buttons = []

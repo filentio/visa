@@ -28,6 +28,11 @@ TG_URL_RE = re.compile(r"t\.me/([A-Za-z0-9_]{5,})")
 LINKEDIN_RE = re.compile(r"linkedin\.com|linkedin:", re.IGNORECASE)
 EMAIL_RE = re.compile(r"^[^@]+@[^@]+\.[^@]+$")
 
+BOARD_PATTERNS = [
+    ("habr", r"career\.habr\.com/vacancies/\d+"),
+    ("getmatch", r"getmatch\.ru/vacancies/"),
+]
+
 FORM_PATTERNS = [
     r"docs\.google\.com/forms",
     r"forms\.gle/",
@@ -45,7 +50,7 @@ FORM_PATTERNS = [
 
 def detect_contact_type(vacancy) -> str:
     """
-    Returns: 'tg' | 'hh' | 'form' | 'linkedin' | 'unknown'
+    Returns: 'tg' | 'hh' | 'habr' | 'getmatch' | 'form' | 'linkedin' | 'unknown'
     Priority: tg > hh > linkedin > form > unknown
     """
     handle = (vacancy.recruiter_handle or "").strip()
@@ -64,6 +69,12 @@ def detect_contact_type(vacancy) -> str:
     for pat in HH_PATTERNS:
         if re.search(pat, link):
             return "hh"
+
+    # Площадки вакансий (jobsignal/agents/boards_collector.py): откликаются
+    # на самой площадке, у каждой свой тип — оценка и кабинет их различают.
+    for kind, pat in BOARD_PATTERNS:
+        if re.search(pat, link):
+            return kind
 
     # check forms / ats
     for pat in FORM_PATTERNS:

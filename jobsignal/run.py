@@ -28,6 +28,7 @@ COMMANDS = (
     "llm-use",                # NEW: все задачи модели на одного провайдера
     "admin-token",            # NEW: токен служебного доступа к кабинету (Bearer)
     "set-option",             # NEW: правка разрешённой настройки config/.env
+    "boards-collect",         # NEW: Хабр Карьера и getmatch (--force — не ждать интервала)
     "channels",               # NEW: list channels
     "pipeline", "status", "dashboard", "serve",
 )
@@ -418,6 +419,13 @@ def main():
         except Exception as exc:
             hh_error = exc
             logging.error("[hh] СБОР С HH.RU СЛОМАН: %s", exc, exc_info=True)
+        # Площадки помимо hh (Хабр Карьера, getmatch). Сбой — в журнал, не в
+        # код возврата: это дополнительный источник, конвейер от него не зависит.
+        try:
+            from jobsignal.agents.boards_collector import BoardsCollector
+            BoardsCollector().run()
+        except Exception as exc:  # noqa: BLE001
+            logging.error("[boards] сбор с площадок сломан: %s", exc, exc_info=True)
         # Отказ провайдера LLM — не «сбой прогона», а остановка всей системы:
         # без разбора и оценки очередь на отклик не пополняется. Ловим отдельно,
         # чтобы в журнале была причина человеческим языком, а в телеграм ушла
@@ -487,6 +495,10 @@ def main():
         print(f"Очередь: {rep['queue']} | предложено: {rep['offered']}"
               + (f" | не вышло: {rep['failed']}" if rep.get("failed") else "")
               + (f" | осталось в очереди: {left}" if left > 0 else ""))
+
+    elif cmd == "boards-collect":
+        from jobsignal.agents.boards_collector import BoardsCollector
+        print(BoardsCollector(force="--force" in sys.argv[2:]).run())
 
     elif cmd == "set-option":
         """run.py set-option KEY VALUE — правка одной настройки из белого списка.

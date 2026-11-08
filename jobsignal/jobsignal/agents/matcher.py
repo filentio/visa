@@ -101,7 +101,9 @@ DESC_CAP = 3000
 # появится канал отправки (телеграм, формы), они оценятся сами — достаточно
 # расширить эту настройку. Оценивать всё, как раньше, — только явное "*":
 # пустая или забытая настройка не должна молча включать расход на всё подряд.
-_raw_sources = (os.environ.get("MATCH_SOURCES") or "hh").strip()
+# Площадки (habr, getmatch) оцениваются по умолчанию вместе с hh: откликаются
+# на них руками по ссылке из уведомления, канал отправки есть.
+_raw_sources = (os.environ.get("MATCH_SOURCES") or "hh,habr,getmatch").strip()
 MATCH_SOURCES: set[str] | None = (
     None if _raw_sources in ("*", "") else
     {x.strip() for x in _raw_sources.split(",") if x.strip()}
