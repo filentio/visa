@@ -107,6 +107,10 @@ def _build(cmd: str, args: list[str]) -> list[str]:
         if not args or args[0] not in ("habr", "getmatch", "geekjob", "avito"):
             raise ValueError("площадка: habr | getmatch | geekjob | avito")
         return [PY, "tools/probe_board.py", args[0]]
+    if cmd == "set-option":
+        if len(args) != 2:
+            raise ValueError("нужно: KEY VALUE")
+        return [PY, "run.py", "set-option", args[0], args[1]]
     if cmd == "funnel-report":
         return [PY, "tools/funnel_report.py", "--days", one_int("90", 365)]
     if cmd == "tg-scout-dry":
@@ -118,7 +122,7 @@ def _build(cmd: str, args: list[str]) -> list[str]:
 
 COMMANDS = ("llm-check", "status", "proxy-traffic", "hh-session", "hh-resumes",
             "hh-preview", "hh-apply-dry", "letter-preview", "try-resume-choice",
-            "rescore-dry", "llm-use", "tg-scout-dry", "pipeline", "funnel-report", "probe-sources", "probe-board")
+            "rescore-dry", "llm-use", "tg-scout-dry", "pipeline", "funnel-report", "probe-sources", "probe-board", "set-option")
 
 
 def _sh(argv: list[str], timeout: int = 20) -> str:

@@ -27,6 +27,7 @@ COMMANDS = (
     "llm-check",              # NEW: отвечает ли модель (основной и запасной провайдер)
     "llm-use",                # NEW: все задачи модели на одного провайдера
     "admin-token",            # NEW: токен служебного доступа к кабинету (Bearer)
+    "set-option",             # NEW: правка разрешённой настройки config/.env
     "channels",               # NEW: list channels
     "pipeline", "status", "dashboard", "serve",
 )
@@ -486,6 +487,32 @@ def main():
         print(f"Очередь: {rep['queue']} | предложено: {rep['offered']}"
               + (f" | не вышло: {rep['failed']}" if rep.get("failed") else "")
               + (f" | осталось в очереди: {left}" if left > 0 else ""))
+
+    elif cmd == "set-option":
+        """run.py set-option KEY VALUE — правка одной настройки из белого списка.
+
+        Порог автоотклика, источники для оценки, дневной лимит токенов. Значение
+        проверяется; прежний .env — рядом (.env.bak-<время>). Таймерные службы
+        читают .env при каждом запуске, перезапуск не нужен.
+        """
+        import re as _re
+        from jobsignal import env_store
+        allowed = {
+            "HH_AUTO_THRESHOLD": r"(6\d|7\d|8\d|9[0-5])",
+            "MATCH_THRESHOLD": r"(5\d|6\d|7\d|8\d|9[0-5])",
+            "MATCH_SOURCES": r"[a-z]+(,[a-z]+){0,9}",
+            "LLM_DAILY_TOKENS": r"\d{1,9}",
+        }
+        if len(sys.argv) != 4 or sys.argv[2] not in allowed:
+            print("run.py set-option KEY VALUE; KEY из: " + ", ".join(allowed))
+            sys.exit(2)
+        key, val = sys.argv[2], sys.argv[3].strip()
+        if not _re.fullmatch(allowed[key], val):
+            print(f"{key}: недопустимое значение {val!r}")
+            sys.exit(2)
+        old = env_store.read().get(key, "(не задано)")
+        env_store.update({key: val})
+        print(f"{key}: {old} → {val}")
 
     elif cmd == "admin-token":
         """Новый токен служебного доступа к кабинету (DASHBOARD_API_TOKEN).
