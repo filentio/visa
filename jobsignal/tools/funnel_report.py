@@ -142,6 +142,25 @@ def main() -> int:
     for k, r in sorted(ages.items(), key=lambda kv: -sum(kv[1])):
         print(f"  {k:<12} {r[0]:>6} {r[1]:>6} {r[2]:>7} {r[3]:>7}")
 
+    # Возраст по дате ПУБЛИКАЦИИ (пост канала / published_at), не по дате
+    # попадания в базу: очередь на отклик и запас без оценки.
+    print("\nВозраст по дате публикации (дней):")
+    print(f"  {'статус / тип':<22} {'≤14':>6} {'15-30':>6} {'31-45':>6} {'>45':>6}")
+    groups = defaultdict(lambda: [0, 0, 0, 0])
+    for status, ctype, pub in c.execute(
+            "SELECT v.status, v.contact_type, COALESCE(r.posted_at, v.created_at) "
+            "FROM vacancies v LEFT JOIN raw_posts r ON r.id = v.raw_post_id "
+            "WHERE v.is_primary = 1 AND v.status IN ('new', 'matched', 'drafted')"):
+        try:
+            d = datetime.fromisoformat(str(pub)[:19]).replace(tzinfo=timezone.utc)
+            days = (now - d).days
+        except ValueError:
+            continue
+        row = groups[f"{status} / {ctype or '—'}"]
+        row[0 if days <= 14 else 1 if days <= 30 else 2 if days <= 45 else 3] += 1
+    for k, r in sorted(groups.items()):
+        print(f"  {k:<22} {r[0]:>6} {r[1]:>6} {r[2]:>6} {r[3]:>6}")
+
     # Время до ответа.
     lags = []
     for a in apps:

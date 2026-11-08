@@ -169,14 +169,17 @@ class NotifyBot:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
 
-        rows = conn.execute("""
-            SELECT id, role, company, salary, location, description,
-                   recruiter_handle, recruiter_email, link, contact_type
-            FROM vacancies
-            WHERE status = 'matched'
-              AND is_primary = 1
-              AND notified_at IS NULL
-            ORDER BY created_at DESC
+        # Старые по дате публикации не присылаем (jobsignal/freshness.py).
+        from jobsignal import freshness
+        rows = conn.execute(f"""
+            SELECT v.id, v.role, v.company, v.salary, v.location, v.description,
+                   v.recruiter_handle, v.recruiter_email, v.link, v.contact_type
+            FROM vacancies v LEFT JOIN raw_posts r ON r.id = v.raw_post_id
+            WHERE v.status = 'matched'
+              AND v.is_primary = 1
+              AND v.notified_at IS NULL
+              AND {freshness.sqlite_condition()}
+            ORDER BY v.created_at DESC
             LIMIT 20
         """).fetchall()
 

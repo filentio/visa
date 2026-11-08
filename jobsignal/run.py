@@ -516,6 +516,7 @@ def main():
             "LLM_DAILY_TOKENS": r"\d{1,9}",
             "MATCH_MAX_AGE_DAYS": r"\d{1,3}",
             "MATCH_OTHER_PER_RUN": r"\d{1,3}",
+            "VACANCY_MAX_AGE_DAYS": r"([1-9]|[1-3]\d|4[0-5])",
         }
         if len(sys.argv) != 4 or sys.argv[2] not in allowed:
             print("run.py set-option KEY VALUE; KEY из: " + ", ".join(allowed))

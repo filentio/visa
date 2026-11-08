@@ -685,8 +685,16 @@ class HHApplyAgent(BaseAgent):
         }
         done_keys.discard("")
 
+        from jobsignal import freshness
         queue: list[dict] = []
+        stale = 0
         for v in rows:
+            # Старше VACANCY_MAX_AGE_DAYS по дате публикации — не откликаемся:
+            # такая вакансия почти всегда в архиве, а открыть её стоит
+            # попытки и трафика прокси.
+            if not freshness.is_fresh(v):
+                stale += 1
+                continue
             ct = v.contact_type or detect_contact_type(v)
             if ct != "hh":
                 continue
@@ -732,8 +740,10 @@ class HHApplyAgent(BaseAgent):
                     continue
                 seen.add(item["key"])
             unique.append(item)
-        log.info("[hh_apply] очередь по порогу %d%%: %d вакансий",
-                 threshold, len(unique))
+        log.info("[hh_apply] очередь по порогу %d%%: %d вакансий%s",
+                 threshold, len(unique),
+                 f" (старше {freshness.max_age_days()} дн. по дате публикации "
+                 f"пропущено: {stale})" if stale else "")
         return unique
 
     # --- письмо -----------------------------------------------------------

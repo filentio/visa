@@ -76,8 +76,10 @@ class TGOutreachAgent:
                 .order_by(best.c.score.desc(), Vacancy.created_at.desc())
             ).all()
 
+            # Старые по дате публикации не предлагаем (jobsignal/freshness.py).
+            from jobsignal import freshness
             personal = [(v, sc) for v, sc in rows
-                        if is_personal(v.recruiter_handle, mass)]
+                        if is_personal(v.recruiter_handle, mass) and freshness.is_fresh(v)]
 
             # Кому уже писали — спрашиваем у телеграма. Наша база знает
             # только про отправки через систему, а человек писал руками
