@@ -171,7 +171,7 @@ class NotifyBot:
 
         rows = conn.execute("""
             SELECT id, role, company, salary, location, description,
-                   recruiter_handle, link, contact_type
+                   recruiter_handle, recruiter_email, link, contact_type
             FROM vacancies
             WHERE status = 'matched'
               AND is_primary = 1
@@ -227,6 +227,11 @@ class NotifyBot:
             text += f"<i>{_esc(reason[:120])}</i>\n"
         if desc:
             text += f"\n{_esc(desc)}"
+        # Почта — единственный контакт у части вакансий из каналов. Кнопкой её
+        # не открыть (телеграм не пускает mailto), поэтому адрес — в тексте.
+        email = v["recruiter_email"] if "recruiter_email" in v.keys() else None
+        if email:
+            text += f"\n\n📧 Отклик на почту: <code>{_esc(email)}</code>"
 
         if ct == "tg" and handle:
             # ── TG flow: open chat button ──────────────────────────────────

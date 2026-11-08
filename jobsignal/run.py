@@ -514,6 +514,7 @@ def main():
             "MATCH_THRESHOLD": r"(5\d|6\d|7\d|8\d|9[0-5])",
             "MATCH_SOURCES": r"[a-z]+(,[a-z]+){0,9}",
             "LLM_DAILY_TOKENS": r"\d{1,9}",
+            "MATCH_MAX_AGE_DAYS": r"\d{1,3}",
         }
         if len(sys.argv) != 4 or sys.argv[2] not in allowed:
             print("run.py set-option KEY VALUE; KEY из: " + ", ".join(allowed))

@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import re
 import os
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
@@ -104,6 +105,11 @@ DESC_CAP = 3000
 # Площадки (habr, getmatch) оцениваются по умолчанию вместе с hh: откликаются
 # на них руками по ссылке из уведомления, канал отправки есть.
 _raw_sources = (os.environ.get("MATCH_SOURCES") or "hh,habr,getmatch").strip()
+# Оцениваем только свежие вакансии: включение нового источника (почта,
+# анкеты) не должно тащить на оценку архив за месяцы — это расход на модель
+# ради вакансий, которые давно закрыты. 0 — без ограничения.
+MATCH_MAX_AGE_DAYS = int(os.environ.get("MATCH_MAX_AGE_DAYS", "30"))
+
 MATCH_SOURCES: set[str] | None = (
     None if _raw_sources in ("*", "") else
     {x.strip() for x in _raw_sources.split(",") if x.strip()}
@@ -207,6 +213,9 @@ class MatcherAgent(BaseAgent):
                         *([Vacancy.contact_type.in_(MATCH_SOURCES)]
                           if MATCH_SOURCES else []),
                         *tg_filter,
+                        *([Vacancy.created_at >= datetime.now(timezone.utc).replace(tzinfo=None)
+                           - timedelta(days=MATCH_MAX_AGE_DAYS)]
+                          if MATCH_MAX_AGE_DAYS > 0 else []),
                     )
                     # Свежие вперёд: если пачки не хватит на всю очередь,
                     # оценить стоит то, по чему ещё можно откликнуться.
