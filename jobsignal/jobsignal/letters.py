@@ -344,7 +344,11 @@ def remember(v, letter: Letter) -> None:
     v.draft_text = letter.text
     v.draft_channel = letter.channel
     v.draft_profile = letter.profile
-    v.draft_version = letter.version
+    # Письмо с фактами не из резюме показываем в кабинете, но готовым к
+    # автоотправке не считаем: другая версия — и reusable() его не возьмёт,
+    # автоотклик напишет и проверит своё (08.11: кнопка «Сгенерировать»
+    # обходила запрет на такие письма).
+    v.draft_version = letter.version if letter.facts_ok else letter.version + "-facts"
 
 
 def reusable(v, channel: str, profile: str) -> str | None:

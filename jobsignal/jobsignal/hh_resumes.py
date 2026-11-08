@@ -124,6 +124,13 @@ def read_cache() -> dict | None:
     return data.get("resumes") or None
 
 
+def drop_cache() -> None:
+    try:
+        CACHE_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def write_cache(resumes: dict[str, str]) -> None:
     try:
         CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)

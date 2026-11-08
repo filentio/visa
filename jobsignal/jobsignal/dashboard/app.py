@@ -1082,7 +1082,7 @@ LLM_FIELDS = [
 
 # Умолчания настроек, которые читаются не через Settings, а прямо из окружения.
 _ENV_DEFAULTS = {"PROXY_WARN_PCT": "20", "HH_SEARCH_EVERY_H_PROXY": "3",
-                 "HH_DESC_LIMIT_PROXY": "40", "LLM_DAILY_TOKENS": "0",
+                 "HH_DESC_LIMIT_PROXY": "40", "LLM_DAILY_TOKENS": "5000000",
                  "MATCH_MODEL_TIER": "big", "MATCH_PREFILTER": "true",
                  "MATCH_CV_CAP": "8000"}
 

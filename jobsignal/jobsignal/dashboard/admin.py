@@ -43,6 +43,7 @@ TIMERS = ("jobsignal-pipeline", "jobsignal-hh-apply", "jobsignal-replies",
           "jobsignal-tgwatch", "jobsignal-tgscout", "jobsignal-backup",
           "jobsignal-update")
 
+MAX_JOBS = 2
 _INT = re.compile(r"^\d{1,3}$")
 _HH_VAC = re.compile(r"^https://hh\.ru/vacancy/\d{4,12}$")
 _PROVIDER = re.compile(r"^(anthropic|openai|deepseek|gigachat|ollama)$")
@@ -167,6 +168,16 @@ def register(app, requires_auth, same_origin) -> None:
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
         JOBS.mkdir(parents=True, exist_ok=True)
+        # Журналы задач старше недели — в корзину; больше MAX_JOBS задач
+        # одновременно не запускаем: каждая может тратить токены модели.
+        now = time.time()
+        for old in JOBS.glob("*.log"):
+            if now - old.stat().st_mtime > 7 * 86400:
+                old.unlink(missing_ok=True)
+        running = _sh(["systemctl", "list-units", "--type=service", "--state=active,activating",
+                       "--no-legend", "--plain", "jobsignal-job-*"])
+        if len([ln for ln in running.splitlines() if ln.strip()]) >= MAX_JOBS:
+            return jsonify({"error": f"уже идут {MAX_JOBS} задачи — дождись их"}), 429
         job = time.strftime("%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
         log_path = JOBS / f"{job}.log"
         shell = (f"echo '$ {' '.join(shlex.quote(a) for a in argv[1:] if a)}'; "

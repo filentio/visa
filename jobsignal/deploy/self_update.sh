@@ -58,6 +58,13 @@ if [ "$OLD" = "$NEW" ] && [ "$FORCE" != "--force" ]; then
   echo "новых коммитов нет ($(git log -1 --format=%h))"
   exit 0
 fi
+# Коммит, который уже не прошёл проверку, второй раз не пробуем: иначе каждые
+# 10 минут то же «обновление отменено» в телеграм. Следующий коммит — пробуем.
+FAILED_FILE=$APP/data/update_failed_commit
+if [ "$FORCE" != "--force" ] && [ -f "$FAILED_FILE" ] && [ "$(cat "$FAILED_FILE")" = "$NEW" ]; then
+  echo "коммит $(git rev-parse --short "$NEW") уже не прошёл проверку — жду следующего"
+  exit 0
+fi
 if ! git merge -q --ff-only "origin/$BRANCH"; then
   echo "в $SRC локальные изменения — обновление без перемотки невозможно"
   state fail "в /root/visa локальные изменения, git merge --ff-only не прошёл"
@@ -67,7 +74,20 @@ fi
 CHANGES=$(git log --format='• %s' "$OLD..$NEW" | head -15)
 
 # 1. Проверка: новый код импортируется (из исходников, до раскладки).
+#    Новые зависимости ставим ДО проверки: иначе коммит с новой библиотекой
+#    проверку не пройдёт никогда. Установка добавочная, старому коду не мешает.
 STAGE=$SRC/jobsignal
+REQ_CHANGED=$(git diff --name-only "$OLD" "$NEW" -- jobsignal/requirements.txt)
+if [ -n "$REQ_CHANGED" ]; then
+  echo "requirements.txt изменился — ставлю зависимости"
+  if ! "$APP/.venv/bin/pip" install -q -r "$STAGE/requirements.txt"; then
+    git reset -q --keep "$OLD"
+    echo "$NEW" > "$FAILED_FILE"
+    state fail "не установились зависимости из requirements.txt"
+    notify "⚠️ Обновление отменено: не установились новые зависимости. Остался прежний код."
+    exit 1
+  fi
+fi
 if ! ( cd "$APP" && PYTHONPATH="$STAGE" "$PY" -c "
 import sys; sys.path.insert(0, '$STAGE')
 import jobsignal.dashboard.app, jobsignal.agents.hh_apply, jobsignal.agents.notify_bot
@@ -75,6 +95,7 @@ import jobsignal.letters, jobsignal.llm
 " ); then
   echo "новый код не импортируется — раскладку отменяю"
   git reset -q --keep "$OLD"
+  echo "$NEW" > "$FAILED_FILE"
   state fail "новый код не прошёл проверку импорта, оставлен $(git log -1 --format=%h)"
   notify "⚠️ Обновление отменено: новый код не запускается. Остался прежний."
   exit 1
@@ -87,15 +108,10 @@ if ! flock -w 1500 9; then
   git reset -q --keep "$OLD"
   exit 0
 fi
-REQ_CHANGED=$(git diff --name-only "$OLD" "$NEW" -- jobsignal/requirements.txt)
 UNITS_CHANGED=$(git diff --name-only "$OLD" "$NEW" -- jobsignal/deploy/systemd)
 cp -r "$STAGE/jobsignal" "$STAGE/tools" "$STAGE/deploy" "$APP/"
 cp "$STAGE/run.py" "$STAGE/run_polling.py" "$STAGE/requirements.txt" "$APP/"
 for f in channels.yaml .env.example; do cp "$STAGE/config/$f" "$APP/config/$f"; done
-if [ -n "$REQ_CHANGED" ]; then
-  echo "requirements.txt изменился — ставлю зависимости"
-  "$APP/.venv/bin/pip" install -q -r "$APP/requirements.txt"
-fi
 if [ -n "$UNITS_CHANGED" ] || [ "$FORCE" = "--force" ]; then
   cp "$APP"/deploy/systemd/*.service "$APP"/deploy/systemd/*.timer /etc/systemd/system/
   systemctl daemon-reload
@@ -116,6 +132,7 @@ if [ -n "$BAD" ]; then
   notify "⚠️ Обновлено до $SHORT, но не поднялись службы:$BAD"
   exit 1
 fi
+rm -f "$FAILED_FILE"
 state ok "код $SHORT"
 notify "🔄 Система обновлена до $SHORT
 $CHANGES"

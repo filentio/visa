@@ -457,12 +457,21 @@ def _usage_path():
     return Path(os.environ.get("LLM_USAGE_FILE", USAGE_FILE))
 
 
+# Лимит по умолчанию: без него перерасход замечали только по счёту
+# провайдера (Яндекс 03.11 и 04-06.11). 5 млн токенов — с запасом на обычные
+# сутки (разбор, оценка, письма) и на переоценку. 0 — без лимита, явно.
+DEFAULT_DAILY_TOKENS = 5_000_000
+
+
 def _daily_limit() -> int:
     import os
+    raw = os.environ.get("LLM_DAILY_TOKENS")
+    if raw is None or not raw.strip():
+        return DEFAULT_DAILY_TOKENS
     try:
-        return int(float(os.environ.get("LLM_DAILY_TOKENS", "0") or 0))
+        return int(float(raw))
     except ValueError:
-        return 0
+        return DEFAULT_DAILY_TOKENS
 
 
 def usage_today() -> dict:

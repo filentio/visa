@@ -194,6 +194,16 @@ class LetterRejected(Exception):
     """Письмо написано, но отправлять его нельзя (факты не из резюме)."""
 
 
+class ModelDown(Exception):
+    """Модель не ответила (сбой провайдера, дневной лимит). Не свойство
+    вакансии: прогон останавливаем, вакансию в очереди не трогаем."""
+
+
+# Начало detail у отказа по фактам — только такие NO_LETTER копятся до
+# NO_LETTER_GIVE_UP. Сбой модели вакансию из очереди не выкидывает.
+FACTS_REJECT_PREFIX = "в письме факты, которых нет в резюме"
+
+
 # Сколько прогонов подряд письмо к вакансии не получается, прежде чем убрать
 # её из очереди: иначе она съедает попытку и вызов модели в каждом прогоне.
 NO_LETTER_GIVE_UP = 3
@@ -611,6 +621,8 @@ class HHApplyAgent(BaseAgent):
         self._resume_map: dict[str, dict] | None = None
         # Причина остановить прогон из-за резюме (не то ушло, выбрать нельзя).
         self._resume_stop = ""
+        # Модель не отвечает: остальные вакансии прогона упрутся в то же самое.
+        self._model_down = ""
 
     # --- публичный вход ---------------------------------------------------
 
@@ -753,6 +765,10 @@ class HHApplyAgent(BaseAgent):
         for try_no in range(1, LETTER_TRIES + 1):
             letter = letters.generate(v.role or "", v.company or "", vac_text,
                                       profile=profile, channel="hh")
+            down = [i for i in letter.issues
+                    if i.startswith(("модель не ответила", "нет текста резюме"))]
+            if down and not letter.text:
+                raise ModelDown("; ".join(down)[:300])
             if letter.ok and letter.facts_ok:
                 break
             log.warning("[hh_apply] #%s: письмо не годится (попытка %d/%d): %s",
@@ -764,7 +780,7 @@ class HHApplyAgent(BaseAgent):
             # которых нет в резюме, не отправляем вовсе (07.11: «в независимой
             # практике сократил онбординг», а это было в ФИНАМе).
             if letter is not None and letter.ok and not letter.facts_ok:
-                raise LetterRejected("в письме факты, которых нет в резюме: "
+                raise LetterRejected(FACTS_REJECT_PREFIX + ": "
                                      + "; ".join(letter.issues)[:300])
             return letter.text if letter else ""
 
@@ -932,13 +948,26 @@ class HHApplyAgent(BaseAgent):
                     "[hh_apply] #%s: hh закрыл страницу %d раз — убираю из очереди",
                     attempt.vacancy_id, seen,
                 )
-        elif attempt.result is Result.NO_LETTER and not self.dry_run:
-            # Письмо не выходит который прогон подряд — вакансия в работе
-            # руками (статус skipped, причина в hh_apply_attempts).
-            seen = self._seen_with_result(session, attempt.vacancy_id, Result.NO_LETTER)
+        elif (attempt.result is Result.NO_LETTER and not self.dry_run
+              and attempt.detail.startswith(FACTS_REJECT_PREFIX)):
+            # Письмо без выдуманных фактов не выходит который прогон подряд —
+            # вакансия в работе руками (статус skipped, причина в журнале).
+            # Только отказы по фактам: сбой модели (ModelDown) — не свойство
+            # вакансии, иначе 15 минут без DeepSeek выкидывали бы лучшие.
+            seen = self._seen_with_result(session, attempt.vacancy_id, Result.NO_LETTER,
+                                          detail_prefix=FACTS_REJECT_PREFIX)
             if seen >= NO_LETTER_GIVE_UP:
                 self._set_status(session, attempt, VacancyStatus.skipped)
                 log.warning("[hh_apply] #%s: письмо не получилось %d раз — "
+                            "убираю из очереди", attempt.vacancy_id, seen)
+        elif attempt.result is Result.RESUME_UNAVAILABLE and not self.dry_run:
+            # hh не принимает на вакансию резюме её профиля — повтор не лечит,
+            # а вакансия с высоким баллом открывалась бы первой в каждом прогоне.
+            seen = self._seen_with_result(
+                session, attempt.vacancy_id, Result.RESUME_UNAVAILABLE)
+            if seen >= NO_RESPOND_GIVE_UP:
+                self._set_status(session, attempt, VacancyStatus.skipped)
+                log.warning("[hh_apply] #%s: нужное резюме недоступно %d раз — "
                             "убираю из очереди", attempt.vacancy_id, seen)
         elif attempt.result is Result.NO_RESPOND_BUTTON:
             # Тот же ограниченный ретрай, что и для 403, но без оглядки на
@@ -1017,7 +1046,8 @@ class HHApplyAgent(BaseAgent):
             log.info("[hh_apply] %s: сообщение в телеграм отправлено (id %s)",
                      about, message_id)
 
-    def _seen_with_result(self, session, vacancy_id: int, result: Result) -> int:
+    def _seen_with_result(self, session, vacancy_id: int, result: Result,
+                          detail_prefix: str = "") -> int:
         """Сколько БОЕВЫХ попыток ПОДРЯД у вакансии закончились этим исходом,
         включая текущую (_record пишет её в журнал до подсчёта).
 
@@ -1029,15 +1059,15 @@ class HHApplyAgent(BaseAgent):
         """
         rows = session.execute(
             sql_text(
-                "SELECT result FROM hh_apply_attempts "
+                "SELECT result, detail FROM hh_apply_attempts "
                 "WHERE vacancy_id = :vid AND dry_run = 0 "
                 "ORDER BY id DESC LIMIT 20"
             ),
             {"vid": vacancy_id},
         ).fetchall()
         streak = 0
-        for (res,) in rows:
-            if res != result.value:
+        for res, detail in rows:
+            if res != result.value or not (detail or "").startswith(detail_prefix):
                 break
             streak += 1
         return streak
@@ -1246,6 +1276,13 @@ class HHApplyAgent(BaseAgent):
                     # квоте нет.
                     if attempt.result.sent and not self.dry_run:
                         self._notify_sent(attempt)
+
+                    if self._model_down:
+                        report.stopped_reason = (
+                            f"модель не отвечает ({self._model_down[:160]}) — прогон "
+                            "остановлен, очередь не тронута")
+                        log.error("[hh_apply] %s", report.stopped_reason)
+                        break
 
                     if self._resume_stop:
                         # Сообщение в телеграм уже ушло (_pause) — без кода 1
@@ -1507,6 +1544,21 @@ class HHApplyAgent(BaseAgent):
                 "в состоянии страницы нет списка резюме для отклика — выбрать "
                 "резюме не на чем", await self._screenshot(item["id"], "no-resume-state"))
         rid = vr.id_by_hash(target["hash"])
+        if rid is None:
+            # Хэша из кэша на странице нет: резюме на hh пересоздали или
+            # переименовали. Узнаём его по названию прямо из состояния страницы
+            # (там есть названия), а кэш сбрасываем — следующий прогон
+            # перечитает список резюме.
+            hits = [k for k, r in vr.resumes.items()
+                    if prof and prof.hh_resume_title
+                    and prof.hh_resume_title.lower() in (r.get("title") or "").lower()]
+            if len(hits) == 1:
+                rid = hits[0]
+                target = {**target, "hash": vr.resumes[rid]["hash"],
+                          "title": vr.resumes[rid].get("title") or target["title"]}
+                hh_resumes.drop_cache()
+                log.info("[hh_apply] резюме профиля %s сменилось на hh — беру «%s» "
+                         "по названию, кэш сброшен", prof.key, target["title"])
         if rid is not None and rid in vr.used:
             return None, self._attempt(item, "", Result.ALREADY_APPLIED,
                                        f"отклик резюме «{target['title']}» уже есть")
@@ -1848,6 +1900,9 @@ class HHApplyAgent(BaseAgent):
         except LetterRejected as exc:
             log.warning("[hh_apply] #%s: %s", vid, exc)
             return self._attempt(item, "", Result.NO_LETTER, str(exc))
+        except ModelDown as exc:
+            self._model_down = str(exc)
+            return self._attempt(item, "", Result.NO_LETTER, f"модель недоступна: {exc}")
         except Exception as exc:  # noqa: BLE001 — сбой генерации не роняет прогон
             log.exception("[hh_apply] #%s: ошибка генерации письма", vid)
             return self._attempt(item, "", Result.NO_LETTER, f"{type(exc).__name__}: {exc}")
