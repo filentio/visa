@@ -63,7 +63,10 @@ def strip_contacts(text: str) -> str:
     провайдера за рубежом (DeepSeek), и личные данные туда отдавать незачем.
     Письма пишутся по полному резюме — это делает letters.py.
     """
-    lines = (text or "").splitlines()
+    # Глифы шрифта PDF без расшифровки (см. resume_parser.extract_text) —
+    # в пробел, иначе телефон с ними не узнаётся.
+    text = re.sub(r"[\ue000-\uf8ff]", " ", text or "")
+    lines = text.splitlines()
     for i, line in enumerate(lines[:3]):
         if _NAME_LINE_RE.match(line):
             lines[i] = "[кандидат]"

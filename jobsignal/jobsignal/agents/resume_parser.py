@@ -11,6 +11,7 @@ ResumeParser — парсит PDF резюме и сохраняет текст 
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from pathlib import Path
 
@@ -31,8 +32,15 @@ def pdf_path_for(profile_key: str) -> Path | None:
 
 
 def extract_text(pdf_path: str) -> str:
-    """Текст PDF: pypdf, при неудаче pdfminer/pdfplumber."""
-    return _extract_pdf_text(pdf_path) or _extract_pdf_text_fallback(pdf_path)
+    """Текст PDF: pypdf, при неудаче pdfminer/pdfplumber.
+
+    Символы частной области Unicode (U+E000–U+F8FF) — глифы шрифта PDF без
+    расшифровки: в резюме ими набраны «+», скобки и дефисы. Заменяем на
+    пробел: иначе телефон «+7 (926) 211-10-88» не узнаётся как телефон и
+    уходит в модель вместе с текстом (09.11).
+    """
+    text = _extract_pdf_text(pdf_path) or _extract_pdf_text_fallback(pdf_path)
+    return re.sub(r"[\ue000-\uf8ff]", " ", text or "")
 
 
 def _ensure_table():
