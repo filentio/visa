@@ -183,6 +183,42 @@ ARCHIVED_TEXT_RE = re.compile(r"в\s+архиве|vacancy\s+is\s+archived", re.I
 # соискателям и работодателю. Аккаунт при этом залогинен — это не сессия и не
 # селекторы, отклик по такой вакансии невозможен в принципе.
 # Страницу логина hh отдаёт то по-русски, то по-английски — держим оба текста.
+# Блок адреса целиком (09.11 12:30): вместо вакансии hh отдаёт «hh.ru
+# недоступен. Владелец сайта запретил доступ с вашего IP-адреса». Это не
+# вакансия и не сессия — адрес прокси, и стучаться в него каждые 5 минут
+# значит продлевать блок.
+IP_BLOCK_TEXT_RE = re.compile(r"запретил\s+доступ\s+с\s+вашего\s+ip|access\s+denied.*ip",
+                              re.IGNORECASE)
+IP_BLOCK_FILE = Path(os.environ.get("HH_IP_BLOCK_FILE", "data/hh_ip_block.json"))
+IP_BLOCK_PAUSE_MIN = int(os.environ.get("HH_IP_BLOCK_PAUSE_MIN", "60"))
+
+
+def ip_block_until() -> float:
+    try:
+        return float(json.loads(IP_BLOCK_FILE.read_text()).get("until", 0))
+    except (OSError, ValueError):
+        return 0.0
+
+
+def _ip_block_set() -> bool:
+    """Записать паузу. True — блок новый (сообщить в телеграм)."""
+    import time as _t
+    try:
+        old = json.loads(IP_BLOCK_FILE.read_text())
+    except (OSError, ValueError):
+        old = {}
+    now = _t.time()
+    new = old.get("until", 0) < now - 3 * 3600      # прошлый блок давно кончился
+    data = {"since": now if new else old.get("since", now),
+            "until": now + IP_BLOCK_PAUSE_MIN * 60}
+    try:
+        IP_BLOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        IP_BLOCK_FILE.write_text(json.dumps(data))
+    except OSError:
+        pass
+    return new
+
+
 NOT_ALLOWED_TEXT_RE = re.compile(
     r"недоступна\s+при\s+текущей\s+авторизации"
     r"|not\s+available\s+under\s+current\s+authorization",
@@ -1139,6 +1175,17 @@ class HHApplyAgent(BaseAgent):
             # Две паузы для боевого режима: ручной выключатель и пауза после
             # отклика, ушедшего не с тем резюме. Предпросмотр ничего не
             # нажимает — его не держим.
+            # hh заблокировал адрес прокси — пауза, браузер не поднимаем.
+            import time as _t
+            until = ip_block_until()
+            if until > _t.time():
+                report.stopped_reason = (
+                    "hh заблокировал адрес прокси — пауза до "
+                    + datetime.fromtimestamp(until, timezone.utc).strftime("%H:%M UTC")
+                    + "; если блок не снимется — сменить адрес: run.py proxy-rotate")
+                log.warning("[hh_apply] %s", report.stopped_reason)
+                return report
+
             if not self.dry_run and queue and hh_resumes.choice_needed():
                 if _resume_choice_off():
                     report.stopped_reason = (
@@ -1325,6 +1372,22 @@ class HHApplyAgent(BaseAgent):
                                 "а не на закрытые вакансии; прогон остановлен"
                             )
                             report.aborted = True
+                            if getattr(self, "_ip_blocked", False):
+                                # Блок адреса: пауза и одно сообщение, а не
+                                # тревога каждые 5 минут.
+                                report.aborted = False
+                                report.stopped_reason = (
+                                    f"hh заблокировал адрес прокси — пауза "
+                                    f"{IP_BLOCK_PAUSE_MIN} мин")
+                                if _ip_block_set():
+                                    self._notify(
+                                        "🚫 <b>hh заблокировал адрес прокси</b>\n"
+                                        "Вместо вакансий: «Владелец сайта запретил доступ "
+                                        "с вашего IP-адреса». Аккаунт и сессия в порядке. "
+                                        f"Автоотклик на паузе {IP_BLOCK_PAUSE_MIN} мин и "
+                                        "попробует снова. Если блок держится — сменить "
+                                        "адрес прокси и войти в hh заново через кабинет.",
+                                        about="ip-block")
                             log.error("[hh_apply] %s", report.stopped_reason)
                             break
                     else:
@@ -1485,6 +1548,18 @@ class HHApplyAgent(BaseAgent):
         alive, detail = await hh_session.check_page(page)
         hh_session.record_probe(alive)
         if alive is None:
+            try:
+                body = await page.inner_text("body")
+            except Exception:  # noqa: BLE001
+                body = ""
+            if IP_BLOCK_TEXT_RE.search(body or ""):
+                self._ip_blocked = True
+                if _ip_block_set():
+                    self._notify(
+                        "🚫 <b>hh заблокировал адрес прокси</b>\nКабинет hh отвечает: "
+                        "«Владелец сайта запретил доступ с вашего IP-адреса». Аккаунт и "
+                        f"сессия в порядке. Автоотклик на паузе {IP_BLOCK_PAUSE_MIN} мин.",
+                        about="ip-block")
             # Не удалось проверить (сеть, прокси) — это не разлогин. Прогон
             # прекращаем, но без тревоги «перелогинься»: см. run().
             log.error("[hh_apply] сессию проверить не удалось: %s", detail)
@@ -1969,6 +2044,10 @@ class HHApplyAgent(BaseAgent):
             body = await page.locator("body").first.inner_text()
         except Exception:  # noqa: BLE001 — страница могла не дорисоваться
             body = ""
+        if IP_BLOCK_TEXT_RE.search(body):
+            self._ip_blocked = True
+            return (f"hh заблокировал адрес прокси (HTTP {status}): «запретил доступ "
+                    "с вашего IP-адреса»", False)
         if NOT_ALLOWED_TEXT_RE.search(body):
             return (
                 f"hh не отдал вакансию этому аккаунту (HTTP {status}): она видна "

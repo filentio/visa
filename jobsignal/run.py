@@ -2,6 +2,7 @@
 import logging
 import os
 import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
 load_dotenv("config/.env")
@@ -28,6 +29,7 @@ COMMANDS = (
     "llm-use",                # NEW: все задачи модели на одного провайдера
     "admin-token",            # NEW: токен служебного доступа к кабинету (Bearer)
     "set-option",             # NEW: правка разрешённой настройки config/.env
+    "proxy-rotate",           # NEW: новый адрес резидентного прокси (смена -sid-)
     "boards-collect",         # NEW: Хабр Карьера и getmatch (--force — не ждать интервала)
     "notify-check",           # NEW: разослать подходящие вакансии в телеграм
     "email-outreach",         # NEW: отклики по почте (--check / --test — проверка ящика)
@@ -526,6 +528,32 @@ def main():
     elif cmd == "boards-collect":
         from jobsignal.agents.boards_collector import BoardsCollector
         print(BoardsCollector(force="--force" in sys.argv[2:]).run())
+
+    elif cmd == "proxy-rotate":
+        """Новый выходной адрес резидентного прокси: смена идентификатора сессии
+        (-sid-XXXX) в HH_PROXY. Нужна, когда hh заблокировал текущий адрес.
+        После смены — войти в hh заново (кабинет → «Вход в hh»): hh привязывает
+        сессию к адресу. Строку прокси не печатаем."""
+        import re as _re
+        import secrets
+        from jobsignal import env_store
+        raw = env_store.read().get("HH_PROXY", "")
+        m = _re.search(r"(-sid-|-session-|_session-|-sessid-)([A-Za-z0-9]+)", raw)
+        if not raw:
+            print("HH_PROXY не задан")
+            sys.exit(2)
+        if not m:
+            print("в строке прокси нет идентификатора сессии (-sid-…) — адрес "
+                  "меняется в кабинете провайдера прокси")
+            sys.exit(2)
+        new = raw[:m.start(2)] + secrets.token_hex(4) + raw[m.end(2):]
+        env_store.update({"HH_PROXY": new})
+        try:
+            Path("data/hh_ip_block.json").unlink(missing_ok=True)
+        except OSError:
+            pass
+        print("адрес прокси сменён (новый идентификатор сессии). Теперь войдите в hh "
+              "заново: кабинет → «Вход в hh» → «Начать вход».")
 
     elif cmd == "set-option":
         """run.py set-option KEY VALUE — правка одной настройки из белого списка.
