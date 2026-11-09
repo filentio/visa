@@ -80,13 +80,16 @@ def _send(text: str, markup: dict | None = None) -> int | None:
     return None
 
 
-def _send_doc(file_path: str, caption: str) -> bool:
+def _send_doc(file_path: str, caption: str, markup: dict | None = None) -> bool:
     """Send document with caption."""
     try:
+        data = {"chat_id": _chat(), "caption": caption, "parse_mode": "HTML"}
+        if markup:
+            data["reply_markup"] = json.dumps(markup)
         with open(file_path, "rb") as f:
             r = requests.post(
                 _api("sendDocument"),
-                data={"chat_id": _chat(), "caption": caption, "parse_mode": "HTML"},
+                data=data,
                 files={"document": f},
                 timeout=30,
             )
@@ -318,16 +321,31 @@ class NotifyBot:
             # second message: forward-ready with resume
             cover = _cover_text(role, company, profile_key, vacancy_id=vid,
                                 channel="telegram")
-            caption = (f"👇 <i>Перешли это сообщение рекрутёру</i>\n\n{_esc(cover)}"
+            send_markup = None
+            if cover:
+                # Письмо — в черновик вакансии: кнопка «Отправить» шлёт ровно
+                # тот текст, который человек прочитал здесь.
+                from jobsignal import letters
+                conn.execute(
+                    "UPDATE vacancies SET draft_text=?, draft_channel='telegram', "
+                    "draft_profile=?, draft_version=? WHERE id=?",
+                    (cover, profile_key, letters.LETTER_VERSION, vid))
+                conn.commit()
+                send_markup = {"inline_keyboard": [[
+                    {"text": f"📤 Отправить @{username}", "callback_data": f"tgsend:{vid}"},
+                    {"text": "⏭ Пропустить", "callback_data": f"tgskip:{vid}"},
+                ]]}
+            caption = (f"👇 <i>Письмо рекрутёру. «📤 Отправить» — уйдёт с вашего "
+                       f"аккаунта вместе с резюме</i>\n\n{_esc(cover)}"
                        if cover else "⚠️ Письмо не получилось (модель не ответила "
                        "или нет резюме профиля) — резюме прикладываю без текста")
             from jobsignal.agents.resume_parser import pdf_path_for
             resume_path = pdf_path_for(_resume_key(profile_key))
 
             if resume_path is not None:
-                _send_doc(str(resume_path), caption)
+                _send_doc(str(resume_path), caption[:1024], send_markup)
             else:
-                _send(caption)
+                _send(caption, send_markup)
             return mid
 
         else:
@@ -417,6 +435,14 @@ class NotifyBot:
                 pass
             return
 
+        # Кнопка «📤 Отправить» у отклика в телеграм: письмо и резюме уходят
+        # рекрутёру с аккаунта кандидата (jobsignal/tg_send.py). Нажатие —
+        # и есть разрешение; без него ничего не отправляется.
+        if data.startswith("tgsend:"):
+            vid = int(data.split(":")[1])
+            self._tg_send(vid, chat_id)
+            return
+
         # Кнопка «📧 Отправить» у отклика по почте (agents/email_outreach.py).
         if data.startswith("emailsend:"):
             vid = int(data.split(":")[1])
@@ -495,6 +521,61 @@ class NotifyBot:
             }, timeout=15)
         except Exception as e:
             log.error("[notify] callback send error: %s", e)
+
+    def _tg_send(self, vid: int, chat_id) -> None:
+        from datetime import datetime, timezone
+        from jobsignal import profiles, tg_send
+
+        def reply(text: str) -> None:
+            try:
+                requests.post(_api("sendMessage"), data={
+                    "chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=10)
+            except Exception:  # noqa: BLE001
+                pass
+
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        try:
+            v = conn.execute("SELECT id, role, company, recruiter_handle, draft_text, "
+                             "draft_channel, draft_profile FROM vacancies WHERE id=?",
+                             (vid,)).fetchone()
+            if not v or not v["recruiter_handle"]:
+                reply("⚠️ У вакансии нет контакта рекрутёра в Telegram")
+                return
+            if conn.execute("SELECT 1 FROM applications WHERE vacancy_id=? AND "
+                            "sent_at IS NOT NULL", (vid,)).fetchone():
+                reply("ℹ️ По этой вакансии отклик уже есть — повтор не отправляю")
+                return
+            text = (v["draft_text"] or "").strip()
+            if not text or v["draft_channel"] != "telegram":
+                reply("⚠️ Письма для Telegram нет — нажмите «Получить сопроводительное» "
+                      "и потом «Отправить»")
+                return
+            prof = profiles.resolve(v["draft_profile"])
+            pdf = prof.resume_pdf() if prof else None
+            handle = "@" + v["recruiter_handle"].lstrip("@")
+            try:
+                tg_send.send_application(handle, text, pdf)
+            except tg_send.AlreadyContacted as exc:
+                reply(f"ℹ️ {_esc(str(exc))}")
+                return
+            except Exception as exc:  # noqa: BLE001
+                log.error("[notify] tgsend #%s: %s", vid, exc)
+                reply(f"⚠️ Не отправлено: {_esc(str(exc))}")
+                return
+            now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+            conn.execute("DELETE FROM applications WHERE vacancy_id=? AND is_draft=1 "
+                         "AND channel='telegram'", (vid,))
+            conn.execute("INSERT INTO applications (vacancy_id, message_text, channel, "
+                         "is_draft, sent_at, created_at) VALUES (?,?,'telegram',0,?,?)",
+                         (vid, text, now, now))
+            conn.execute("UPDATE vacancies SET status='applied' WHERE id=?", (vid,))
+            conn.commit()
+            reply(f"✅ Отправлено {_esc(handle)}: письмо"
+                  + (" и резюме" if pdf else " (без PDF — у профиля нет файла резюме)")
+                  + f"\n{_esc(v['role'] or '')}")
+        finally:
+            conn.close()
 
     def run_webhook_polling(self, interval: int = 5) -> None:
         """

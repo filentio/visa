@@ -129,12 +129,14 @@ class TGOutreachAgent:
                         f"{' · ' + html.escape(v.company) if v.company else ''}\n"
                         f"@{html.escape(handle)}")
                 body = f"<pre>{html.escape(letter)}</pre>"
-                tail = (f'<a href="https://t.me/{handle}">открыть диалог</a> — '
-                        f"скопируй письмо, отправь и отметь ниже")
-                markup = {"inline_keyboard": [[
-                    {"text": "✅ Отправил", "callback_data": f"applied:{v.id}"},
-                    {"text": "⏭ Пропустить", "callback_data": f"tgskip:{v.id}"},
-                ]]}
+                tail = (f"«📤 Отправить» — письмо и резюме уйдут с вашего аккаунта. "
+                        f'Или <a href="https://t.me/{handle}">откройте диалог</a>, '
+                        f"отправьте сами и отметьте «✅ Отправил».")
+                markup = {"inline_keyboard": [
+                    [{"text": f"📤 Отправить @{handle}", "callback_data": f"tgsend:{v.id}"}],
+                    [{"text": "✅ Отправил сам", "callback_data": f"applied:{v.id}"},
+                     {"text": "⏭ Пропустить", "callback_data": f"tgskip:{v.id}"}],
+                ]}
                 if _send(f"{head}\n\n{body}\n\n{tail}", markup) is None:
                     failed += 1
                     continue
