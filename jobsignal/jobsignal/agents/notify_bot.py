@@ -208,7 +208,14 @@ class NotifyBot:
             ORDER BY best DESC, v.id DESC
         """).fetchall()
 
+        from jobsignal.agents.email_outreach import mode as email_mode
+        email_on = email_mode() != "off"
+
         def wanted(v) -> bool:
+            # Почтовые вакансии при включённой рассылке писем предлагает
+            # email_outreach (письмо с кнопкой «Отправить») — без дубля.
+            if email_on and v["contact_type"] == "email":
+                return False
             return not (v["contact_type"] == "hh" and (v["best"] or 0) >= auto)
 
         def mark(ids):
@@ -404,6 +411,25 @@ class NotifyBot:
                 requests.post(_api("sendMessage"), data={
                     "chat_id": chat_id,
                     "text": f"✅ Отмечено: откликнулся на <b>{_esc(role)}</b>{(' · ' + _esc(company)) if company else ''}",
+                    "parse_mode": "HTML",
+                }, timeout=10)
+            except Exception:
+                pass
+            return
+
+        # Кнопка «📧 Отправить» у отклика по почте (agents/email_outreach.py).
+        if data.startswith("emailsend:"):
+            vid = int(data.split(":")[1])
+            from jobsignal.agents.email_outreach import EmailOutreach
+            try:
+                res = EmailOutreach().send_one(vid)
+            except Exception as exc:  # noqa: BLE001
+                res = f"ошибка: {type(exc).__name__}: {exc}"
+            ok = res.startswith("отправлено")
+            try:
+                requests.post(_api("sendMessage"), data={
+                    "chat_id": chat_id,
+                    "text": ("📧 Письмо " if ok else "⚠️ Письмо не ушло: ") + _esc(res),
                     "parse_mode": "HTML",
                 }, timeout=10)
             except Exception:

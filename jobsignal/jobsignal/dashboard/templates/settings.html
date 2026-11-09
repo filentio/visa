@@ -140,6 +140,22 @@ th{color:var(--text2);font-weight:500;}
       появляются позже. По умолчанию поиск раз в 3 ч и 40 описаний за прогон.</div>
   </div>
 
+  <h2 style="margin-top:28px">Отклики по почте</h2>
+  <p class="sub">Вакансии, где единственный контакт — почта рекрутёра: письмо под вакансию и
+    PDF резюме профиля уходят с вашего ящика. Режим «с подтверждением» присылает письмо в
+    телеграм с кнопкой «📧 Отправить»; «авто» отправляет само в пределах лимитов.
+    Нужен <b>пароль приложения</b>, не обычный пароль: Яндекс — id.yandex.ru → Безопасность →
+    Пароли приложений (тип «Почта»); Gmail — myaccount.google.com → Безопасность → Пароли
+    приложений; Mail.ru — Настройки → Безопасность → Пароли для внешних приложений.</p>
+  <div class="card">
+    <div class="grid" id="g-email"></div>
+    <div class="row" style="margin:12px 0 0">
+      <button class="btn" onclick="emailCheck(false)">Проверить вход</button>
+      <button class="btn" onclick="emailCheck(true)">Отправить проверочное письмо себе</button>
+    </div>
+    <div class="note" id="email-check" style="margin:10px 0 0">Сначала сохраните настройки.</div>
+  </div>
+
   <div class="row">
     <button class="btn primary" onclick="save()">Сохранить</button>
     <button class="btn" onclick="check()">Проверить модели</button>
@@ -172,6 +188,11 @@ function input(f) {
     html = `<input id="${id}" type="password" autocomplete="new-password"
              placeholder="${f.set ? 'задан — впиши новый, чтобы заменить' : 'не задан'}">
             <div class="hint ${f.set ? 'set' : ''}">${f.set ? '✓ задан ' + esc(f.hint) : 'ключа нет'}</div>`;
+  } else if (f.kind === 'mode') {
+    const v = f.value || f.default || 'off';
+    html = `<select id="${id}">${[['off', 'выключено'], ['confirm', 'с подтверждением в телеграме'],
+      ['auto', 'авто (в пределах лимитов)']].map(([k, l]) =>
+      `<option value="${k}" ${k === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
   } else if (f.kind === 'tier') {
     const v = f.value || f.default || 'big';
     html = `<select id="${id}"><option value="big" ${v === 'big' ? 'selected' : ''}>сильная (точнее, дороже)</option>
@@ -187,7 +208,7 @@ function input(f) {
 async function load() {
   const d = await (await fetch('/api/settings/llm')).json();
   FIELDS = d.fields; PROVIDERS = d.providers;
-  for (const g of ['main', 'routes', 'deepseek', 'anthropic', 'openai', 'gigachat', 'proxy', 'economy'])
+  for (const g of ['main', 'routes', 'deepseek', 'anthropic', 'openai', 'gigachat', 'proxy', 'economy', 'email'])
     document.getElementById('g-' + g).innerHTML = FIELDS.filter(f => f.group === g).map(input).join('');
   highlight();
   loadProxy();
@@ -286,6 +307,15 @@ async function save() {
   if (!d.ok) { status('✗ ' + d.error, 'err'); return; }
   status('✓ ' + d.message + '. Действует со следующего прогона; бот перезапущен. Нажми «Проверить модели».', 'ok');
   load();
+}
+
+async function emailCheck(test) {
+  const box = document.getElementById('email-check');
+  box.textContent = 'Проверяю…';
+  const r = await fetch('/api/settings/email/check', {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify({test})});
+  const d = await r.json().catch(() => ({}));
+  box.textContent = (String(d.result || d.error || '').startsWith('ok') ? '✅ ' : '❌ ') + (d.result || d.error || 'нет ответа');
 }
 
 async function check() {

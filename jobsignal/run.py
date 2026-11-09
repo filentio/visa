@@ -30,6 +30,7 @@ COMMANDS = (
     "set-option",             # NEW: правка разрешённой настройки config/.env
     "boards-collect",         # NEW: Хабр Карьера и getmatch (--force — не ждать интервала)
     "notify-check",           # NEW: разослать подходящие вакансии в телеграм
+    "email-outreach",         # NEW: отклики по почте (--check / --test — проверка ящика)
     "channels",               # NEW: list channels
     "pipeline", "status", "dashboard", "serve",
 )
@@ -443,6 +444,12 @@ def main():
                           "Разбор и оценка стоят, отклики не пополняются. "
                           "Попытки постам не списаны — прогон догонит сам.")
             sys.exit(1)
+        # Отклики по почте (EMAIL_OUTREACH_MODE: off | confirm | auto).
+        try:
+            from jobsignal.agents.email_outreach import EmailOutreach
+            EmailOutreach().run()
+        except Exception as exc:  # noqa: BLE001
+            logging.error("[email] отклики по почте не прошли: %s", exc, exc_info=True)
         # Подходящие вакансии — в телеграм. До 09.11 рассылку не вызывал никто
         # (таймер jobsignal-notify на этом сервере не ставился), и ни одно
         # уведомление о вакансии не уходило. Сбой телеграма прогон не роняет.
@@ -504,6 +511,13 @@ def main():
         print(f"Очередь: {rep['queue']} | предложено: {rep['offered']}"
               + (f" | не вышло: {rep['failed']}" if rep.get("failed") else "")
               + (f" | осталось в очереди: {left}" if left > 0 else ""))
+
+    elif cmd == "email-outreach":
+        from jobsignal.agents import email_outreach as eo
+        if "--check" in sys.argv[2:] or "--test" in sys.argv[2:]:
+            print(eo.check(send_test="--test" in sys.argv[2:]))
+        else:
+            print(eo.EmailOutreach().run())
 
     elif cmd == "notify-check":
         from jobsignal.agents.notify_bot import NotifyBot

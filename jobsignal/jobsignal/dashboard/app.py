@@ -1077,6 +1077,17 @@ LLM_FIELDS = [
     ("MATCH_BATCH_LIMIT", "Вакансий на оценку за прогон", "number", "economy"),
     ("PARSER_BATCH_LIMIT", "Постов на разбор за прогон", "number", "economy"),
     ("MATCH_CV_CAP", "Длина резюме в оценке, знаков", "number", "economy"),
+    # Отклики по почте (agents/email_outreach.py).
+    ("EMAIL_OUTREACH_MODE", "Режим", "mode", "email"),
+    ("SMTP_USER", "Адрес ящика", "text", "email"),
+    ("SMTP_PASSWORD", "Пароль приложения", "secret", "email"),
+    ("EMAIL_FROM_NAME", "Имя отправителя (Имя Фамилия)", "text", "email"),
+    ("EMAIL_SIGNATURE", "Подпись: строки через | (телефон | Telegram)", "text", "email"),
+    ("EMAIL_THRESHOLD", "Порог оценки для письма, %", "number", "email"),
+    ("EMAIL_PER_DAY", "Писем в сутки, не больше", "number", "email"),
+    ("EMAIL_PER_HOUR", "Писем в час, не больше", "number", "email"),
+    ("SMTP_HOST", "Сервер SMTP (если не Яндекс/Gmail/Mail.ru)", "text", "email"),
+    ("SMTP_PORT", "Порт SMTP", "number", "email"),
 ]
 
 
@@ -1084,7 +1095,9 @@ LLM_FIELDS = [
 _ENV_DEFAULTS = {"PROXY_WARN_PCT": "20", "HH_SEARCH_EVERY_H_PROXY": "3",
                  "HH_DESC_LIMIT_PROXY": "40", "LLM_DAILY_TOKENS": "5000000",
                  "MATCH_MODEL_TIER": "big", "MATCH_PREFILTER": "true",
-                 "MATCH_CV_CAP": "8000"}
+                 "MATCH_CV_CAP": "8000",
+                 "EMAIL_OUTREACH_MODE": "off", "EMAIL_THRESHOLD": "75",
+                 "EMAIL_PER_DAY": "10", "EMAIL_PER_HOUR": "3", "SMTP_PORT": "465"}
 
 
 def _same_origin() -> bool:
@@ -1149,7 +1162,8 @@ def api_settings_llm():
                 changes[env] = str(value).strip()
             continue                           # пусто — не менять
         value = "" if value is None else str(value).strip()
-        if value == "" and kind in ("text", "auth", "bool", "provider_opt", "number", "tier"):
+        if value == "" and kind in ("text", "auth", "bool", "provider_opt", "number", "tier",
+                                    "mode"):
             # Пусто — значит «по умолчанию»: строку убираем из файла, а не
             # пишем пустую (пустая затёрла бы модель по умолчанию).
             if env in current:
@@ -1170,6 +1184,8 @@ def api_settings_llm():
             value = "true" if value.lower() in ("1", "true", "on", "yes") else "false"
             if env == "MATCH_PREFILTER":
                 value = "1" if value == "true" else "0"
+        if kind == "mode" and value not in ("off", "confirm", "auto"):
+            return jsonify({"ok": False, "error": f"{env}: off, confirm или auto"}), 400
         if kind == "tier" and value not in ("big", "small"):
             return jsonify({"ok": False, "error": f"{env}: big или small"}), 400
         if env == "OPENAI_EXTRA_HEADERS" and value:
@@ -1199,6 +1215,21 @@ def api_settings_llm():
     names = ", ".join(sorted(changes))
     log.info("[settings] изменены настройки модели: %s", names)
     return jsonify({"ok": True, "message": f"Сохранено: {names}"})
+
+
+@app.route("/api/settings/email/check", methods=["POST"])
+@_requires_auth
+def api_settings_email_check():
+    """Проверка ящика для откликов по почте: вход по SMTP, по желанию — письмо себе."""
+    if not _same_origin():
+        return jsonify({"ok": False, "error": "запрос не со страницы кабинета"}), 403
+    from jobsignal.agents import email_outreach
+    from jobsignal import env_store
+    for k, v in env_store.read().items():          # свежие значения из .env
+        if k.startswith(("SMTP_", "EMAIL_")):
+            os.environ[k] = v
+    test = bool((request.get_json(silent=True) or {}).get("test"))
+    return jsonify({"ok": True, "result": email_outreach.check(send_test=test)})
 
 
 @app.route("/api/settings/proxy", methods=["GET", "POST"])
