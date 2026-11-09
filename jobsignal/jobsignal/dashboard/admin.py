@@ -205,7 +205,10 @@ def register(app, requires_auth, same_origin) -> None:
             return jsonify({"error": f"уже идут {MAX_JOBS} задачи — дождись их"}), 429
         job = time.strftime("%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
         log_path = JOBS / f"{job}.log"
-        shell = (f"echo '$ {' '.join(shlex.quote(a) for a in argv[1:] if a)}'; "
+        # Строку для журнала тоже экранируем целиком: аргумент с кавычками
+        # (python -c '...') внутри echo '...' ломал разбор всей команды.
+        shown = "$ " + " ".join(a if len(a) < 120 else a[:117] + "..." for a in argv[1:] if a)
+        shell = (f"echo {shlex.quote(shown)}; "
                  f"{' '.join(shlex.quote(a) for a in argv)}; echo \"[код выхода $?]\"")
         # Отдельный юнит: задача переживает перезапуск кабинета и не держит
         # его процесс. Каталог и окружение — как у остальных служб.
