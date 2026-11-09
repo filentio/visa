@@ -224,6 +224,30 @@ def register(app, requires_auth, same_origin) -> None:
         text = path.read_text(encoding="utf-8", errors="replace")
         return jsonify({"job": job, "running": running, "output": text[-60000:]})
 
+    # Диагностика: снимки и списки data-qa, которые оставляет автоотклик.
+    FILE_DIRS = {"shots": APP_DIR / "data" / "hh_screenshots",
+                 "choice": APP_DIR / "data" / "try_resume_choice",
+                 "probe": APP_DIR / "data" / "probe_resume_choice"}
+
+    @app.route("/api/admin/files/<kind>")
+    @requires_auth
+    def admin_files(kind: str):
+        base = FILE_DIRS.get(kind)
+        if base is None:
+            abort(404)
+        name = request.args.get("name", "")
+        if not name:
+            items = sorted(base.glob("*"), key=lambda p: p.stat().st_mtime,
+                           reverse=True)[:int(request.args.get("n", "40"))] if base.exists() else []
+            return jsonify([{"name": p.name, "size": p.stat().st_size} for p in items])
+        if not re.fullmatch(r"[\w.-]{1,120}\.(png|jpg|txt|html|json)", name):
+            abort(400)
+        path = base / name
+        if not path.is_file():
+            abort(404)
+        from flask import send_file
+        return send_file(str(path), max_age=0)
+
     @app.route("/api/admin/logs")
     @requires_auth
     def admin_logs():
@@ -236,5 +260,10 @@ def register(app, requires_auth, same_origin) -> None:
         argv = ["journalctl", "-u", f"{unit}.service", "-n", n, "--no-pager",
                 "-o", "short-iso"]
         if re.fullmatch(r"\d{1,3} (min|hour|day)s? ago", since):
+            argv += ["--since", since]
+        until = request.args.get("until", "")
+        if re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d(:\d\d)?", until):
+            argv += ["--until", until]
+        if re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d(:\d\d)?", since):
             argv += ["--since", since]
         return jsonify({"unit": unit, "log": _sh(argv, timeout=30)})

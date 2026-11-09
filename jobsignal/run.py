@@ -29,6 +29,7 @@ COMMANDS = (
     "admin-token",            # NEW: токен служебного доступа к кабинету (Bearer)
     "set-option",             # NEW: правка разрешённой настройки config/.env
     "boards-collect",         # NEW: Хабр Карьера и getmatch (--force — не ждать интервала)
+    "notify-check",           # NEW: разослать подходящие вакансии в телеграм
     "channels",               # NEW: list channels
     "pipeline", "status", "dashboard", "serve",
 )
@@ -442,6 +443,14 @@ def main():
                           "Разбор и оценка стоят, отклики не пополняются. "
                           "Попытки постам не списаны — прогон догонит сам.")
             sys.exit(1)
+        # Подходящие вакансии — в телеграм. До 09.11 рассылку не вызывал никто
+        # (таймер jobsignal-notify на этом сервере не ставился), и ни одно
+        # уведомление о вакансии не уходило. Сбой телеграма прогон не роняет.
+        try:
+            from jobsignal.agents.notify_bot import NotifyBot
+            NotifyBot().check_and_notify()
+        except Exception as exc:  # noqa: BLE001
+            logging.error("[notify] рассылка вакансий не прошла: %s", exc)
         if failed_agents:
             logging.error("[pipeline] упали агенты: %s — прогон доведён до "
                           "конца, но результат неполный", ", ".join(failed_agents))
@@ -495,6 +504,10 @@ def main():
         print(f"Очередь: {rep['queue']} | предложено: {rep['offered']}"
               + (f" | не вышло: {rep['failed']}" if rep.get("failed") else "")
               + (f" | осталось в очереди: {left}" if left > 0 else ""))
+
+    elif cmd == "notify-check":
+        from jobsignal.agents.notify_bot import NotifyBot
+        print(NotifyBot().check_and_notify())
 
     elif cmd == "boards-collect":
         from jobsignal.agents.boards_collector import BoardsCollector

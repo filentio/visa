@@ -166,40 +166,99 @@ class NotifyBot:
         _ensure_columns()
 
     def check_and_notify(self) -> dict:
+        """Подходящие вакансии — в телеграм. Вызывается конвейером после оценки.
+
+        До 09.11 эту функцию не вызывал никто: на новом сервере не поставили
+        таймер jobsignal-notify, а в конвейер она встроена не была. Ни одно
+        уведомление о вакансии не уходило.
+
+        Что шлём: всё matched из источников без автоотклика (телеграм, Хабр,
+        getmatch, почта, анкеты) и hh ниже порога автоотклика (HH_AUTO_THRESHOLD)
+        — о них решает человек. hh выше порога не шлём: на них система
+        откликается сама и пишет «📤 Отклик отправлен».
+
+        Свежими считаем вакансии не старше NOTIFY_MAX_AGE_H (48 ч) с попадания
+        в базу; накопленное раньше — одной сводкой со ссылкой на кабинет, а не
+        сотней сообщений. Сообщение, которое не ушло, не помечается
+        отправленным: повторим в следующий прогон.
+        """
+        import os
+        from jobsignal import freshness
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
+        auto = 101
+        if os.environ.get("OUTREACH_MODE", "").strip().lower() == "full_auto":
+            try:
+                auto = int(os.environ.get("HH_AUTO_THRESHOLD", "80"))
+            except ValueError:
+                auto = 80
+        max_age_h = int(os.environ.get("NOTIFY_MAX_AGE_H", "48"))
+        per_run = int(os.environ.get("NOTIFY_PER_RUN", "15"))
 
-        # Старые по дате публикации не присылаем (jobsignal/freshness.py).
-        from jobsignal import freshness
         rows = conn.execute(f"""
             SELECT v.id, v.role, v.company, v.salary, v.location, v.description,
-                   v.recruiter_handle, v.recruiter_email, v.link, v.contact_type
+                   v.recruiter_handle, v.recruiter_email, v.link, v.contact_type,
+                   v.created_at,
+                   (SELECT MAX(score) FROM match_scores m WHERE m.vacancy_id = v.id) AS best
             FROM vacancies v LEFT JOIN raw_posts r ON r.id = v.raw_post_id
             WHERE v.status = 'matched'
               AND v.is_primary = 1
               AND v.notified_at IS NULL
               AND {freshness.sqlite_condition()}
-            ORDER BY v.created_at DESC
-            LIMIT 20
+            ORDER BY best DESC, v.id DESC
         """).fetchall()
 
-        sent = errors = 0
-        for v in rows:
-            try:
-                self._notify(conn, v)
-                conn.execute(
-                    "UPDATE vacancies SET notified_at=datetime('now') WHERE id=?",
-                    (v["id"],)
-                )
+        def wanted(v) -> bool:
+            return not (v["contact_type"] == "hh" and (v["best"] or 0) >= auto)
+
+        def mark(ids):
+            if ids:
+                conn.executemany("UPDATE vacancies SET notified_at=datetime('now') "
+                                 "WHERE id=?", [(i,) for i in ids])
                 conn.commit()
+
+        cutoff = conn.execute(f"SELECT datetime('now', '-{max_age_h} hours')").fetchone()[0]
+        auto_hh = [v["id"] for v in rows if not wanted(v)]
+        fresh = [v for v in rows if wanted(v) and str(v["created_at"] or "") >= cutoff]
+        backlog = [v for v in rows if wanted(v) and str(v["created_at"] or "") < cutoff]
+        # hh выше порога автоотклик закроет сам — помечаем, чтобы не всплыли.
+        mark(auto_hh)
+
+        sent = errors = 0
+        if backlog:
+            by_src: dict[str, int] = {}
+            for v in backlog:
+                by_src[v["contact_type"] or "—"] = by_src.get(v["contact_type"] or "—", 0) + 1
+            page = (os.environ.get("DASHBOARD_URL")
+                    or "https://" + os.environ.get("JOBSIGNAL_HOST", "5.187.4.252")
+                    .replace(".", "-") + ".sslip.io")
+            text = (f"📋 <b>Накопилось {len(backlog)} подходящих вакансий</b> "
+                    f"(старше {max_age_h} ч, по одной не присылаю):\n"
+                    + ", ".join(f"{k}: {n}" for k, n in sorted(by_src.items(),
+                                                              key=lambda kv: -kv[1]))
+                    + f"\nСмотреть в кабинете: {page.rstrip('/')}/")
+            if _send(text) is not None:
+                mark([v["id"] for v in backlog])
+                sent += 1
+            else:
+                errors += 1
+
+        for v in fresh[:per_run]:
+            try:
+                if self._notify(conn, v) is None:
+                    errors += 1
+                    continue
+                mark([v["id"]])
                 sent += 1
                 time.sleep(1)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 log.error("[notify] vacancy %s: %s", v["id"], e)
                 errors += 1
 
         conn.close()
-        log.info("[notify] отправлено: %d, ошибок: %d", sent, errors)
+        log.info("[notify] отправлено: %d, ошибок: %d, свежих в очереди: %d, "
+                 "в сводке: %d, hh под автоотклик: %d", sent, errors,
+                 max(0, len(fresh) - per_run), len(backlog), len(auto_hh))
         return {"agent": "notify_bot", "sent": sent, "errors": errors}
 
     def _notify(self, conn, v):
@@ -245,7 +304,9 @@ class NotifyBot:
                 [{"text": "✅ Откликнулся",
                   "callback_data": f"applied:{vid}"}],
             ]}
-            _send(text, markup)
+            mid = _send(text, markup)
+            if mid is None:
+                return None
 
             # second message: forward-ready with resume
             cover = _cover_text(role, company, profile_key, vacancy_id=vid,
@@ -260,6 +321,7 @@ class NotifyBot:
                 _send_doc(str(resume_path), caption)
             else:
                 _send(caption)
+            return mid
 
         else:
             # ── hh / form / linkedin flow: open link + on-demand cover ────
@@ -285,7 +347,7 @@ class NotifyBot:
             applied_btn = [{"text": "✅ Откликнулся",
                             "callback_data": f"applied:{vid}"}]
             markup = {"inline_keyboard": [buttons, applied_btn]} if buttons else None
-            _send(text, markup)
+            return _send(text, markup)
 
     def handle_callback(self, callback_query: dict) -> None:
         """Handle inline button press — generate cover letter on demand."""
