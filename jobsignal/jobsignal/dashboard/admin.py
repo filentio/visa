@@ -123,6 +123,8 @@ def _build(cmd: str, args: list[str]) -> list[str]:
                 f"p = profiles.by_key('{args[0]}'); print(strip_contacts(p.cv_text()) if p else 'нет профиля')"]
     if cmd == "proxy-rotate":
         return [PY, "run.py", "proxy-rotate"]
+    if cmd == "form-domains":
+        return [PY, "tools/form_domains.py", "--days", one_int("30", 90)]
     if cmd == "funnel-report":
         return [PY, "tools/funnel_report.py", "--days", one_int("90", 365)]
     if cmd == "tg-scout-dry":
@@ -134,7 +136,7 @@ def _build(cmd: str, args: list[str]) -> list[str]:
 
 COMMANDS = ("llm-check", "status", "proxy-traffic", "hh-session", "hh-resumes",
             "hh-preview", "hh-apply-dry", "letter-preview", "try-resume-choice",
-            "rescore-dry", "llm-use", "tg-scout-dry", "pipeline", "funnel-report", "probe-sources", "probe-board", "set-option", "boards-collect", "profile-text", "proxy-rotate")
+            "rescore-dry", "llm-use", "tg-scout-dry", "pipeline", "funnel-report", "probe-sources", "probe-board", "set-option", "boards-collect", "profile-text", "proxy-rotate", "form-domains")
 
 
 def _sh(argv: list[str], timeout: int = 20) -> str:
