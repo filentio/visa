@@ -113,6 +113,14 @@ def _build(cmd: str, args: list[str]) -> list[str]:
         return [PY, "run.py", "set-option", args[0], args[1]]
     if cmd == "boards-collect":
         return [PY, "run.py", "boards-collect", *flags({"--force"})]
+    if cmd == "profile-text":
+        # Текст резюме профиля без контактов — готовить ответы рекрутёрам.
+        if len(args) != 1 or not re.fullmatch(r"[a-z0-9_-]{1,32}", args[0]):
+            raise ValueError("нужен ключ профиля (po, loyalty)")
+        return [PY, "-c", "import sys; sys.path.insert(0, '.');"
+                "from dotenv import load_dotenv; load_dotenv('config/.env');"
+                "from jobsignal import profiles; from jobsignal.agents.matcher import strip_contacts;"
+                f"p = profiles.by_key('{args[0]}'); print(strip_contacts(p.cv_text()) if p else 'нет профиля')"]
     if cmd == "funnel-report":
         return [PY, "tools/funnel_report.py", "--days", one_int("90", 365)]
     if cmd == "tg-scout-dry":
@@ -124,7 +132,7 @@ def _build(cmd: str, args: list[str]) -> list[str]:
 
 COMMANDS = ("llm-check", "status", "proxy-traffic", "hh-session", "hh-resumes",
             "hh-preview", "hh-apply-dry", "letter-preview", "try-resume-choice",
-            "rescore-dry", "llm-use", "tg-scout-dry", "pipeline", "funnel-report", "probe-sources", "probe-board", "set-option", "boards-collect")
+            "rescore-dry", "llm-use", "tg-scout-dry", "pipeline", "funnel-report", "probe-sources", "probe-board", "set-option", "boards-collect", "profile-text")
 
 
 def _sh(argv: list[str], timeout: int = 20) -> str:
