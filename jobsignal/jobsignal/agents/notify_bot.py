@@ -438,6 +438,24 @@ class NotifyBot:
         # Кнопка «📤 Отправить» у отклика в телеграм: письмо и резюме уходят
         # рекрутёру с аккаунта кандидата (jobsignal/tg_send.py). Нажатие —
         # и есть разрешение; без него ничего не отправляется.
+        # Ответ рекрутёру из сторожа входящих (jobsignal/recruiter_replies.py).
+        if data.startswith(("rsend:", "redit:", "rskip:")):
+            from jobsignal import recruiter_replies as rr
+            kind, did = data.split(":", 1)
+            if kind == "rsend":
+                text = rr.send(did)
+            elif kind == "rskip":
+                text = "⏭ " + rr.skip(did)
+            else:
+                text = ("✏️ Ответьте на сообщение с черновиком (Reply) своим текстом — "
+                        "покажу новый вариант с кнопкой «Отправить».")
+            try:
+                requests.post(_api("sendMessage"), data={
+                    "chat_id": chat_id, "text": text, "parse_mode": "HTML"}, timeout=10)
+            except Exception:
+                pass
+            return
+
         if data.startswith("tgsend:"):
             vid = int(data.split(":")[1])
             self._tg_send(vid, chat_id)
@@ -522,6 +540,23 @@ class NotifyBot:
         except Exception as e:
             log.error("[notify] callback send error: %s", e)
 
+    def handle_message(self, message: dict) -> None:
+        """Текст от человека в чате бота. Сейчас — только правка черновика
+        ответа рекрутёру: Reply на сообщение с черновиком."""
+        if str(message.get("chat", {}).get("id")) != str(_chat()):
+            return          # чужой чат — не наш человек
+        reply_to = (message.get("reply_to_message") or {}).get("message_id")
+        text = (message.get("text") or "").strip()
+        if not reply_to or not text:
+            return
+        from jobsignal import recruiter_replies as rr
+        did = rr.by_bot_message(reply_to)
+        if not did:
+            return
+        err = rr.edit(did, text)
+        if err:
+            _send("⚠️ " + _esc(err))
+
     def _tg_send(self, vid: int, chat_id) -> None:
         from datetime import datetime, timezone
         from jobsignal import profiles, tg_send
@@ -591,7 +626,7 @@ class NotifyBot:
                     # allowed_updates Telegram ждёт строкой JSON: список из
                     # requests уходил повторяющимися параметрами.
                     params={"offset": offset, "timeout": 30,
-                            "allowed_updates": json.dumps(["callback_query"])},
+                            "allowed_updates": json.dumps(["callback_query", "message"])},
                     timeout=35,
                 )
                 data = r.json()
@@ -609,6 +644,8 @@ class NotifyBot:
                     offset = upd["update_id"] + 1
                     if "callback_query" in upd:
                         self.handle_callback(upd["callback_query"])
+                    elif "message" in upd:
+                        self.handle_message(upd["message"])
             except Exception as e:
                 log.error("[notify] polling error: %s", e)
                 time.sleep(interval)
