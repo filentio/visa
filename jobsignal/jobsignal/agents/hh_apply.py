@@ -1610,17 +1610,30 @@ class HHApplyAgent(BaseAgent):
       const vis = e => { const r = e.getBoundingClientRect();
           return r.width > 0 && r.height > 0
               && getComputedStyle(e).visibility !== 'hidden'; };
+      // Нажать можно только то, что сверху: 08.11 «самым узким» совпадением
+      // оказался тег навыка «Product Owner» на странице ПОД окном отклика, и
+      // клик упёрся в затемнение. Проверяем, что в центре элемента — он сам.
+      const onTop = e => { const r = e.getBoundingClientRect();
+          const x = r.left + r.width / 2, y = r.top + r.height / 2;
+          if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) return false;
+          const t = document.elementFromPoint(x, y);
+          return !!t && (t === e || e.contains(t) || t.contains(e)); };
       document.querySelectorAll('[data-js-pick]').forEach(e => e.removeAttribute('data-js-pick'));
       const sel = '[data-qa="resume-title"], [role=option], [role=radio], '
                 + 'input[type=radio], label, li, [data-qa*="resume"]';
-      let best = null, bestLen = 1e9, count = 0;
+      const full = marks[0] || '';
+      let best = null, bestRank = [9, 1e9], count = 0;
       for (const e of document.querySelectorAll(sel)) {
         const box = e.tagName === 'INPUT' ? (e.closest('label') || e.parentElement) : e;
-        if (!box || !vis(box)) continue;
+        if (!box || !vis(box) || !onTop(box)) continue;
         const t = norm(box.innerText);
         if (!t || t.length > limit || !ours(t)) continue;
         count++;
-        if (t.length < bestLen) { best = e; bestLen = t.length; }
+        // Сначала — с полным названием резюме, затем по краткости текста.
+        const rank = [full && t.includes(full) ? 0 : 1, t.length];
+        if (rank[0] < bestRank[0] || (rank[0] === bestRank[0] && rank[1] < bestRank[1])) {
+          best = e; bestRank = rank;
+        }
       }
       if (best) best.setAttribute('data-js-pick', '1');
       return {count, tag: best ? best.tagName.toLowerCase() : ''};
