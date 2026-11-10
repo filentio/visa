@@ -269,6 +269,10 @@ def meter_context(ctx, source: str) -> None:
 
     async def _done(request) -> None:
         try:
+            # Ответ из кэша статики (hh_session._cached) через прокси не ходил.
+            resp = await request.response()
+            if resp is not None and resp.headers.get("x-jobsignal-cache") == "hit":
+                return
             sizes = await request.sizes()
         except Exception:  # noqa: BLE001 — контекст уже закрыт
             return

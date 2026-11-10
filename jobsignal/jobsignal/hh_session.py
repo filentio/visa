@@ -44,6 +44,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -167,14 +168,97 @@ async def block_heavy(ctx, source: str = "browser") -> None:
 
     async def _route(route):
         try:
-            if route.request.resource_type in BLOCKED_RESOURCES:
+            req = route.request
+            if req.resource_type in BLOCKED_RESOURCES:
                 await route.abort()
+            elif req.resource_type in STATIC_TYPES and req.method == "GET":
+                await _cached(route)
             else:
                 await route.continue_()
         except Exception:  # noqa: BLE001 — гонка при закрытии страницы
             pass
 
     await ctx.route("**/*", _route)
+
+
+# ── кэш статики hh ─────────────────────────────────────────────────────────
+# 09.11 автоотклик за сутки выбрал 666 МБ трафика прокси: каждый прогон —
+# новый браузер без кэша, и скрипты и стили hh (страница тяжёлая) качались
+# заново раз в 5 минут. Они неизменны (имена с хэшем, cache-control на
+# месяцы), поэтому держим их на диске: через прокси — один раз.
+# Кэшируем только ответы 200, которым сам сервер разрешает жить ≥ суток.
+STATIC_TYPES = {"script", "stylesheet"}
+STATIC_CACHE = Path(os.environ.get("HH_STATIC_CACHE", "data/hh_static_cache"))
+STATIC_CACHE_MB = int(os.environ.get("HH_STATIC_CACHE_MB", "400"))
+CACHE_HIT_HEADER = "x-jobsignal-cache"
+
+
+def _cache_key(url: str) -> str:
+    import hashlib
+    return hashlib.sha1(url.encode()).hexdigest()
+
+
+def _max_age(headers: dict) -> int:
+    cc = (headers.get("cache-control") or "").lower()
+    if "no-store" in cc or "private" in cc:
+        return 0
+    m = re.search(r"max-age=(\d+)", cc)
+    return int(m.group(1)) if m else 0
+
+
+async def _cached(route) -> None:
+    import time as _t
+    url = route.request.url
+    key = _cache_key(url)
+    body_p, meta_p = STATIC_CACHE / f"{key}.bin", STATIC_CACHE / f"{key}.json"
+    try:
+        meta = json.loads(meta_p.read_text())
+        if meta.get("expires", 0) > _t.time() and body_p.exists():
+            headers = dict(meta.get("headers") or {})
+            headers[CACHE_HIT_HEADER] = "hit"
+            await route.fulfill(status=200, headers=headers, body=body_p.read_bytes())
+            return
+    except (OSError, ValueError):
+        pass
+    resp = await route.fetch()
+    body = await resp.body()
+    headers = resp.headers
+    age = _max_age(headers)
+    if resp.status == 200 and age >= 86400 and body:
+        try:
+            STATIC_CACHE.mkdir(parents=True, exist_ok=True)
+            keep = {k: v for k, v in headers.items()
+                    if k.lower() in ("content-type", "cache-control", "etag",
+                                     "last-modified", "access-control-allow-origin",
+                                     "timing-allow-origin")}
+            body_p.write_bytes(body)
+            meta_p.write_text(json.dumps({"url": url, "headers": keep,
+                                          "expires": _t.time() + min(age, 30 * 86400)}))
+            _prune_cache()
+        except OSError:
+            pass
+    await route.fulfill(response=resp, body=body)
+
+
+_pruned_at = 0.0
+
+
+def _prune_cache() -> None:
+    """Держать кэш в пределах HH_STATIC_CACHE_MB: удаляем самые старые."""
+    import time as _t
+    global _pruned_at
+    if _t.time() - _pruned_at < 600:
+        return
+    _pruned_at = _t.time()
+    files = sorted(STATIC_CACHE.glob("*.bin"), key=lambda p: p.stat().st_mtime)
+    total = sum(p.stat().st_size for p in files)
+    limit = STATIC_CACHE_MB * 1024 * 1024
+    for p in files:
+        if total <= limit:
+            break
+        total -= p.stat().st_size
+        p.unlink(missing_ok=True)
+        p.with_suffix(".json").unlink(missing_ok=True)
 
 
 def state_path() -> Path:
