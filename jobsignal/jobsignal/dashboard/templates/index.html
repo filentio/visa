@@ -150,6 +150,10 @@ textarea.draft:focus{border-color:var(--accent);}
 .b-form{background:#2d2d1e;color:var(--amber);}
 .b-linkedin{background:#1e2d45;color:#a78bfa;}
 .b-unknown{background:#2a2a2a;color:var(--gray);}
+.b-auto{background:#14532d;color:#86efac;}
+.b-button{background:#1e2650;color:#a5b4fc;}
+.b-manual{background:#3b2a12;color:#fbbf24;}
+.b-done{background:#1f2937;color:#9ca3af;}
 
 /* empty / spinner */
 .empty{padding:50px;text-align:center;color:var(--text2);}
@@ -236,6 +240,14 @@ nav{flex-wrap:wrap;row-gap:8px;}
     <option value="hh">hh.ru</option>
     <option value="form">Форма</option>
     <option value="linkedin">LinkedIn</option>
+    <option value="email">Почта</option>
+    <option value="habr">Хабр Карьера</option>
+    <option value="getmatch">getmatch</option>
+  </select>
+  <select id="f-mode" onchange="loadVacancies()" title="Как уйдёт отклик">
+    <option value="">Любой способ отклика</option>
+    <option value="mine">Ждут меня</option>
+    <option value="auto">Уйдут автоматически</option>
   </select>
   <span style="font-size:11px;color:var(--text2)">Порог</span>
   <input type="range" id="f-threshold" min="0" max="100" value="70"
@@ -270,9 +282,21 @@ function scoreColor(s){
 }
 
 function ctBadge(ct){
-  const cls={tg:'b-tg',hh:'b-hh',form:'b-form',linkedin:'b-linkedin',unknown:'b-unknown'};
-  const lbl={tg:'TG',hh:'hh.ru',form:'Форма',linkedin:'LinkedIn',unknown:'?'};
+  const cls={tg:'b-tg',hh:'b-hh',form:'b-form',linkedin:'b-linkedin',unknown:'b-unknown',
+             email:'b-tg',habr:'b-linkedin',getmatch:'b-linkedin'};
+  const lbl={tg:'TG',hh:'hh.ru',form:'Форма',linkedin:'LinkedIn',unknown:'?',
+             email:'Почта',habr:'Хабр',getmatch:'getmatch'};
   return `<span class="badge ${cls[ct]||'b-unknown'}">${lbl[ct]||ct}</span>`;
+}
+
+// Как уйдёт отклик — чтобы было видно, что система отправит сама, а что ждёт.
+function modeBadge(m){
+  const map={auto:['b-auto','🤖 уйдёт сам','Автоотклик на hh: оценка не ниже порога автоотклика'],
+             button:['b-button','👆 по кнопке в боте','Письмо готовится, уходит по вашей кнопке «Отправить» в боте'],
+             manual:['b-manual','✋ ждёт вас','Отклик на сайте/в LinkedIn/на площадке — делаете вы; письмо по кнопке «Получить сопроводительное»'],
+             done:['b-done','✓ отправлен','Отклик уже отправлен']};
+  const x=map[m]; if(!x) return '';
+  return `<span class="badge ${x[0]}" title="${x[2]}">${x[1]}</span>`;
 }
 
 // ── stats ─────────────────────────────────────────────────────────────────────
@@ -425,6 +449,7 @@ async function loadVacancies(){
     days:document.getElementById('f-days').value,
     status:document.getElementById('f-status').value,
     contact_type:document.getElementById('f-contact').value,
+    mode:document.getElementById('f-mode').value,
     search:document.getElementById('f-search').value,
     queue:queueMode?'1':'0',
   });
@@ -500,6 +525,7 @@ function buildCard(v){
           ${v.is_new?'<span class="badge b-new">новое</span>':''}
           ${esc(v.role)}
           ${ctBadge(ct)}
+          ${modeBadge(v.apply_mode)}
         </div>
         <div class="card-sub">
           <span>${esc(v.company)}</span>

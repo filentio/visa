@@ -268,6 +268,29 @@ def api_vacancies():
     search = request.args.get("search", "").strip().lower()
     queue_only = request.args.get("queue", "") == "1"
     contact_type_filter = request.args.get("contact_type", "")
+    mode_filter = request.args.get("mode", "")       # mine | auto
+    # Как уйдёт отклик (метка в карточке): сам — hh от порога автоотклика;
+    # по кнопке в боте — Telegram с контактом, почта при включённых письмах;
+    # ждёт человека — формы, LinkedIn, площадки, hh ниже порога.
+    full_auto = os.environ.get("OUTREACH_MODE", "").strip().lower() == "full_auto"
+    try:
+        auto_thr = int(os.environ.get("HH_AUTO_THRESHOLD", "80"))
+    except ValueError:
+        auto_thr = 80
+    from jobsignal.agents.email_outreach import mode as _email_mode
+    email_on = _email_mode() != "off"
+
+    def apply_mode(v, d) -> str:
+        if v.status in (VacancyStatus.applied, VacancyStatus.replied):
+            return "done"
+        ct = d["contact_type"]
+        if ct == "hh":
+            return "auto" if full_auto and d["best_score"] >= auto_thr else "manual"
+        if ct == "tg" and v.recruiter_handle:
+            return "button"
+        if ct == "email" and v.recruiter_email and email_on:
+            return "button"
+        return "manual"
 
     if days:
         cutoff = datetime.now(timezone.utc) - timedelta(days=int(days))
@@ -306,6 +329,12 @@ def api_vacancies():
         if contact_type_filter:
             if d["contact_type"] != contact_type_filter:
                 continue
+
+        d["apply_mode"] = apply_mode(v, d)
+        if mode_filter == "mine" and d["apply_mode"] not in ("manual", "button"):
+            continue
+        if mode_filter == "auto" and d["apply_mode"] != "auto":
+            continue
 
         if search:
             haystack = f"{d['role']} {d['company']}".lower()
