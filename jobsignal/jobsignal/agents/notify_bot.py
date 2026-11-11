@@ -160,6 +160,39 @@ def _cover_text(role: str, company: str, profile_key: str, recruiter_name: str =
     return letter.text
 
 
+def offer_tg_send(vid: int, handle: str, role: str, company: str, text: str,
+                  profile_name: str) -> bool:
+    """Письмо рекрутёру в бот с кнопками «📤 Отправить» / «⏭ Пропустить».
+
+    Текст сохраняется черновиком вакансии (канал telegram): кнопка отправит
+    ровно его. Используют уведомление о вакансии и кнопка «В бот» кабинета.
+    """
+    from jobsignal import letters, profiles
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        conn.execute("UPDATE vacancies SET draft_text=?, draft_channel='telegram', "
+                     "draft_profile=?, draft_version=? WHERE id=?",
+                     (text, profile_name, letters.LETTER_VERSION, vid))
+        conn.commit()
+    finally:
+        conn.close()
+    username = handle.lstrip("@")
+    markup = {"inline_keyboard": [[
+        {"text": f"📤 Отправить @{username}", "callback_data": f"tgsend:{vid}"},
+        {"text": "⏭ Пропустить", "callback_data": f"tgskip:{vid}"},
+    ]]}
+    head = (f"📨 <b>{_esc(role or 'Вакансия')}</b>"
+            + (f" — {_esc(company)}" if company and company != "—" else "")
+            + f"\nКому: @{_esc(username)}\n<i>«📤 Отправить» — уйдёт с вашего аккаунта "
+              f"вместе с резюме</i>\n\n")
+    prof = profiles.resolve(profile_name)
+    pdf = prof.resume_pdf() if prof else None
+    caption = head + _esc(text)
+    if pdf is not None and len(caption) <= 1024:
+        return _send_doc(str(pdf), caption, markup)
+    return _send(caption[:4000], markup) is not None
+
+
 class NotifyBot:
     def __init__(self):
         if not _token():

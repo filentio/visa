@@ -430,6 +430,58 @@ def api_generate_draft():
         return jsonify({"error": str(exc)}), 500
 
 
+@app.route("/api/to_bot/<int:vid>", methods=["POST"])
+@_requires_auth
+def api_to_bot(vid):
+    """Кнопка «📲 Отправить через бот»: письмо — в бот с кнопкой «Отправить».
+
+    Текст — из черновика в карточке, если человек его сгенерировал или
+    поправил; иначе пишем сами (с проверкой фактов). Отправка — только по
+    кнопке в боте.
+    """
+    if not _same_origin():
+        return jsonify({"ok": False, "error": "запрос не со страницы кабинета"}), 403
+    text = ((request.get_json(silent=True) or {}).get("text") or "").strip()
+    if text.startswith(("⏳", "✗")):
+        text = ""
+    session = _session()
+    try:
+        v = session.get(Vacancy, vid)
+        if not v:
+            return jsonify({"ok": False, "error": "вакансия не найдена"}), 404
+        ct = v.contact_type or detect_contact_type(v)
+        _, best_profile = _best_score(v)
+        if ct == "email" and v.recruiter_email:
+            from jobsignal.agents.email_outreach import EmailOutreach, mode
+            if mode() == "off":
+                return jsonify({"ok": False, "error": "отклики по почте выключены "
+                                "(«Настройки» → «Отклики по почте»)"})
+            res = EmailOutreach().offer(vid, text or None)
+            return jsonify({"ok": res == "ok", "error": None if res == "ok" else res,
+                            "message": "Письмо в боте — нажмите там «📧 Отправить»"})
+        if not v.recruiter_handle:
+            return jsonify({"ok": False, "error": "у вакансии нет контакта в Telegram "
+                            "или почты — отклик на сайте"})
+        if any(a.sent_at for a in v.applications):
+            return jsonify({"ok": False, "error": "по этой вакансии отклик уже есть"})
+        from jobsignal import letters
+        from jobsignal import profiles as registry
+        prof = registry.resolve(best_profile)
+        pname = prof.name if prof else best_profile
+        if not text:
+            letter = letters.for_vacancy(v.id, channel="telegram", profile=pname or None)
+            if not letter.ok or not letter.facts_ok:
+                return jsonify({"ok": False, "error": "письмо не прошло проверку: "
+                                + "; ".join(letter.issues)[:300]})
+            text = letter.text
+        from jobsignal.agents.notify_bot import offer_tg_send
+        ok = offer_tg_send(v.id, v.recruiter_handle, v.role or "", v.company or "", text, pname)
+        return jsonify({"ok": bool(ok), "error": None if ok else "бот не принял сообщение",
+                        "message": "Письмо в боте — нажмите там «📤 Отправить»"})
+    finally:
+        session.close()
+
+
 @app.route("/api/outreach_data/<int:vid>")
 @_requires_auth
 def api_outreach_data(vid):

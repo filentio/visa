@@ -272,6 +272,47 @@ class EmailOutreach:
         finally:
             s.close()
 
+    def offer(self, vacancy_id: int, text: str | None = None) -> str:
+        """Письмо по одной вакансии — в бот с кнопкой «📧 Отправить» (кнопка
+        «В бот» в кабинете). text — готовый текст из кабинета; пусто — пишем."""
+        from jobsignal import letters, profiles
+        from .notify_bot import _esc, _send
+        s = self._sf()
+        try:
+            v = s.get(Vacancy, vacancy_id)
+            if v is None or not v.recruiter_email:
+                return "у вакансии нет почты рекрутёра"
+            if any(a.sent_at for a in v.applications):
+                return "по этой вакансии отклик уже был"
+            active = set(profiles.names())
+            best = max(((m.score or 0, m.profile_key) for m in v.match_scores
+                        if m.profile_key in active), default=(0, ""))
+            prof = profiles.resolve(best[1])
+            pname = prof.name if prof else best[1]
+            if text and text.strip():
+                letters.remember(v, letters.Letter(text.strip(), "email", pname, "auto"))
+                s.commit()
+                body_text = text.strip()
+            else:
+                body_text, issues = self._letter(s, v, pname)
+                if not body_text:
+                    return "письмо не прошло проверку: " + "; ".join(issues)[:300]
+            sig = _signature()
+            body = body_text + (f"\n\n{sig}" if sig else "")
+            markup = {"inline_keyboard": [[
+                {"text": "📧 Отправить", "callback_data": f"emailsend:{v.id}"},
+                {"text": "⏭ Пропустить", "callback_data": f"tgskip:{v.id}"},
+            ]]}
+            msg = (f"✉️ <b>Отклик по почте</b> · {best[0]}%\n"
+                   f"{_esc(v.role or '—')} — {_esc(v.company or '—')}\n"
+                   f"Кому: <code>{_esc(v.recruiter_email)}</code>\n"
+                   f"Тема: {_esc(_subject(v.role or ''))}\n\n{_esc(body)}")
+            if _send(msg[:4000], markup) is None:
+                return "бот не принял сообщение"
+            return "ok"
+        finally:
+            s.close()
+
     # --- прогон ------------------------------------------------------------
 
     def run(self) -> dict:

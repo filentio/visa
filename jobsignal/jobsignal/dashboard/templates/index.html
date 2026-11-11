@@ -542,7 +542,8 @@ function buildCard(v){
       ${v.stale_scores?`<div class="desc" style="color:var(--amber)">Оценена под прежние профили — ждёт переоценки под текущие (страница «Резюме» → «Переоценить»)</div>`:''}
       <div class="scores">${barsHtml}</div>
       <div class="action-panel">
-        <button class="btn btn-primary" onclick="toggleOutreach(${v.id})">✉️ Откликнуться</button>
+        ${v.apply_mode==='button'?`<button class="btn btn-primary" id="tobot-${v.id}" onclick="toBot(${v.id})" title="Письмо придёт в бот с кнопкой «Отправить»; уйдёт только по ней">📲 Отправить через бот</button>`:''}
+        <button class="btn ${v.apply_mode==='button'?'btn-ghost':'btn-primary'}" onclick="toggleOutreach(${v.id})">✉️ Черновик</button>
         ${contactBtn}
         <a href="/api/resume/${v.id}" download><button class="btn btn-ghost">📄 Резюме</button></a>
         <button class="btn btn-ghost" onclick="markApplied(${v.id})">✓ Отправил</button>
@@ -616,6 +617,21 @@ function copyDraft(id){
       btn.textContent='✓ Скопировано';setTimeout(()=>btn.textContent='📋 Скопировать',1500);
     });
   }else{dt.select();document.execCommand('copy');btn.textContent='✓';setTimeout(()=>btn.textContent='📋 Скопировать',1500);}
+}
+
+// Письмо — в бот с кнопкой «Отправить». Если черновик в карточке уже есть
+// (сгенерирован или поправлен), уходит он.
+async function toBot(id){
+  const btn=document.getElementById(`tobot-${id}`);
+  const dt=document.getElementById(`dt-${id}`);
+  const text=(dt&&dt.value&&!/^[⏳✗]/.test(dt.value))?dt.value:'';
+  btn.disabled=true; btn.textContent='⏳ Готовлю письмо…';
+  try{
+    const d=await(await fetch(`/api/to_bot/${id}`,{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({text})})).json();
+    btn.textContent=d.ok?'✓ В боте — нажмите «Отправить»':'✗ '+(d.error||'ошибка');
+    if(!d.ok) setTimeout(()=>{btn.disabled=false;btn.textContent='📲 Отправить через бот';},4000);
+  }catch(e){btn.disabled=false;btn.textContent='✗ ошибка сети';}
 }
 
 // ── status ────────────────────────────────────────────────────────────────────
