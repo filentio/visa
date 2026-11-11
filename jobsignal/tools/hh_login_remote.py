@@ -143,14 +143,21 @@ def main() -> int:
         page = ctx.new_page()
         page.set_default_timeout(60_000)
         try:
-            for attempt in range(1, 4):
+            for attempt in range(1, 3):
                 try:
-                    page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=90_000)
+                    page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=45_000)
                     break
                 except Exception as exc:  # noqa: BLE001
-                    status("starting", f"страница входа не открылась ({attempt}/3): "
+                    status("starting", f"страница входа не открылась ({attempt}/2): "
                                        f"{str(exc).splitlines()[0][:120]}")
                     time.sleep(3)
+            else:
+                # Не открылась ни разу — почти всегда прокси (кончился трафик или
+                # он недоступен). Висеть на «Запускаю браузер» бессмысленно.
+                status("failed", "hh не открылся через прокси сервера — скорее всего, "
+                                 "кончился трафик пакета или прокси недоступен. Проверьте "
+                                 "пакет у провайдера прокси и начните вход заново.")
+                return 1
             status("login", "войдите на hh: кликайте по экрану, вводите текст в поле ниже",
                    page.url)
             last_check = 0.0
